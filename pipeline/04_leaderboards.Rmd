@@ -1,0 +1,444 @@
+---
+title: "Leaderboards"
+author: "Team 305"
+date: "2026-07-24"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Good looking leaderboard (all in one):
+
+```{r}
+## Loading in necessary packages
+
+library(dplyr)
+library(purrr)
+library(ggplot2)
+library(stringr)
+
+# Loading data from previously created runner and catcher files
+# runner_info contains the runner-side metrics from the previous Rmd file.
+# catcher_info contains the catcher-side metrics from the catcher tracking file.
+runner_info <- readRDS("runner_info.rds")
+catcher_info <- readRDS("catcher_info.rds")
+```
+
+# Prepare catcher metrics to use in the existing leaderboard flow
+
+```{r}
+# The catcher file already contains the important tracking metrics.
+# For the leaderboard maker, we only need:
+#   pop_time = catcher catch to receive/tag at second
+#   p95_throw_speed_mph = high-end throw speed
+
+# Renamed p95_throw_speed_mph to throw_velo because it is the cleaner project-wide name used in the scoreboard and modeling files.
+# Use p95 instead of max throw speed because it is less affected by one-frame tracking spikes, while still representing the upper-end velocity of the throw.
+
+# Create a clean catcher metrics table that can be joined onto the runner data.
+# This keeps one row per steal attempt with the catcher metrics needed for the leaderboards and model.
+
+catcher_metrics <- catcher_info %>%
+  mutate(
+# Convert play_per_game to numeric so it joins correctly with runner_info.   
+    play_per_game = as.numeric(play_per_game),
+ # Rename the p95 throw speed variable to a shorter project-wide name.
+    throw_velo = p95_throw_speed_mph,
+# The catcher data does not include catcher names, so this creates a readable label for the catcher leaderboards.
+    catcher = "Catcher"
+  ) %>%
+  filter(
+# Keep only throws to second base with reasonable pop time values.
+    throw_to_2b,
+    pop_time <= 3.5
+  ) %>%
+  select(
+    game_string,
+    play_per_game,
+    catcher,
+    pop_time,
+    throw_velo,
+    exchange_time,
+    flight_time,
+    max_throw_speed_mph,
+    p95_throw_speed_mph,
+    avg_throw_speed_mph,
+    arrival_dist_to_2b
+  )
+```
+
+## Combining runner and catcher info
+
+```{r}
+# Combine the runner and catcher metrics into one play-level table.
+# game_string + play_per_game identifies each steal attempt.
+
+# Join runner metrics and catcher metrics into one full steal attempt table.
+# This creates the main dataset used for both leaderboard graphics and modeling.
+
+steal_attempts_full <- runner_info %>%
+  mutate(
+  # Make sure play_per_game has the same type in both files before joining.
+    play_per_game = as.numeric(play_per_game)
+  ) %>%
+  left_join(
+    catcher_metrics %>%
+    select(-any_of("catcher")),
+    by = c("game_string", "play_per_game")
+  ) %>%
+  mutate(
+  # Convert runner top speed from feet per second to miles per hour for the scoreboard.
+    top_speed_mph = top_speed * 0.681818,
+  # Convert jump from feet per second gained to miles per hour gained.
+    jump_mph = jump * 0.681818
+  )
+```
+
+
+```{r}
+## Setting up logic that works for any of the 4 categories
+
+# This table defines the four leaderboard types.
+# Each row tells the function which metric to rank, which player column to show, what title/subtitle/unit to use, and whether higher or lower values are better.
+
+metric_settings <- tibble::tribble(
+  ~metric_id,           ~metric_col,   ~player_col, ~board_title,              ~board_subtitle,                                      ~unit,          ~higher_is_better, ~priority,
+  "runner_top_speed",   "top_speed_mph",   "runner",    "TOP RUNNER SPEEDS",       "Fastest sustained bursts during steal attempts",     "mph",         TRUE,              1,
+  "runner_jump",        "jump_mph",        "runner",    "BEST RUNNER JUMPS",       "Most speed gained in the first 0.4 seconds",         "mph gained",  TRUE,              2,
+  "catcher_pop_time",   "pop_time",    "catcher",   "FASTEST POP TIMES",       "Quickest catcher throws to second base",         "sec",          FALSE,             3,
+  "catcher_throw_velo", "throw_velo",  "catcher",   "HARDEST CATCHER THROWS",  "Highest catcher throw velocities on steal attempts", "mph",          TRUE,              4
+)
+
+## Building One Leaderboard
+
+# This function builds one top-10 leaderboard based on the metric settings above.
+# It is reused for runner speed, runner jump, catcher pop time, and catcher throw velocity.
+
+build_metric_leaderboard <- function(data, metric_id, metric_col, player_col, board_title, board_subtitle, unit, higher_is_better, priority) {
+  
+# If a metric column is missing, return an empty table instead of crashing.
+
+  if (!metric_col %in% names(data)) return(tibble())
+  
+# If the selected player column is missing, fall back to runner.
+  if (!player_col %in% names(data)) player_col <- "runner"
+ # Keep only real steal outcomes and plays with a valid value for the selected metric.
+  metric_data <- data %>%
+    filter(
+      outcome %in% c("Safe", "Out"),
+      !is.na(.data[[metric_col]])
+    )
+   
+# For speed, jump, and throw velocity, higher is better.
+# For pop time, lower is better.
+
+  
+# Sort the plays differently depending on whether the leaderboard rewards high or low values.
+  if (higher_is_better) {
+    metric_data <- metric_data %>% arrange(desc(.data[[metric_col]]))
+  } else {
+    metric_data <- metric_data %>% arrange(.data[[metric_col]])
+  }
+# Take the top 10 plays and format the columns needed for the scoreboard graphic. 
+  metric_data %>%
+    slice_head(n = 10) %>%
+    mutate(
+      rank = row_number(),
+      metric_id = metric_id,
+      player_id = as.character(.data[[player_col]]),
+      board_title = board_title,
+      board_subtitle = board_subtitle,
+      priority = priority,
+  # Shorter game label for scoreboard display
+  game_label = str_replace(
+  game_string,
+  "^y\\d+_d([0-9.]+)_([A-Z]+)_([A-Z]+)$",
+  "D\\1: \\2-\\3"),
+      metric_value = round(.data[[metric_col]], 2),
+      metric_label = paste(metric_value, unit)
+    ) %>%
+    select(
+      metric_id,
+      board_title,
+      board_subtitle,
+      priority,
+      rank,
+      game_string,
+      game_label,
+      play_per_game,
+      player_id,
+      outcome,
+      metric_value,
+      metric_label
+    )
+}
+
+# Building one combined trigger table
+# A play appears in the table if it ranks top 10 in at least 1 category
+
+# Run the leaderboard function once for each row in metric_settings.
+# The result is one combined table of every play that triggered a top-10 leaderboard.
+
+all_leaderboard_triggers <- pmap_dfr(
+  metric_settings,
+  function(metric_id, metric_col, player_col, board_title, board_subtitle,
+    unit, higher_is_better, priority) {
+    
+    build_metric_leaderboard(
+      data = steal_attempts_full,
+      metric_id = metric_id,
+      metric_col = metric_col,
+      player_col = player_col,
+      board_title = board_title,
+      board_subtitle = board_subtitle,
+      unit = unit,
+      higher_is_better = higher_is_better,
+      priority = priority
+    )
+  }
+)
+
+# Save leaderboard triggers for the graphic maker file.
+saveRDS(all_leaderboard_triggers, "all_leaderboard_triggers.rds")
+
+# Scoreboard Graphic
+
+# This function creates the actual top-10 scoreboard graphic.
+# It takes one leaderboard table, highlights a specific play if needed, and optionally saves the graphic as a PNG file.
+
+make_scoreboard_leaderboard <- function(board_data,
+                                        highlight_game = NULL,
+                                        highlight_play = NULL,
+                                        output_file = NULL) {
+  # If the selected leaderboard has no rows, do not make a graphic.
+  if (nrow(board_data) == 0) return(NULL)
+  
+plot_data <- board_data %>%
+  arrange(rank) %>%
+  mutate(
+  # Create vertical positions for each leaderboard row.
+    y = 9.35 - (row_number() - 1) * 0.85,
+  # Format the rank as #1, #2, #3, etc.
+    rank_label = paste0("#", rank),
+    
+    # Runner boards show "Player ___".
+    # Catcher boards show the catcher/play label directly.
+    player_label = if_else(
+      str_detect(metric_id, "^catcher"),
+      player_id,
+      paste0("Player ", player_id)
+    ),
+  # Mark whether this row is the play that should be highlighted.  
+    highlight = .data$game_string == .env$highlight_game &
+      .data$play_per_game == .env$highlight_play
+  )
+ # Build the scoreboard layout with rectangles, text, and row highlights. 
+  p <- ggplot(plot_data, aes(y = y)) +
+    annotate("rect", xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf,
+             fill = "#07111F") +
+    annotate("rect", xmin = 0, xmax = 100, ymin = 10.95, ymax = 12.4,
+             fill = "#12355B") +
+    
+    annotate("text", x = 50, y = 11.8, label = board_data$board_title[1],
+             color = "white", size = 13, fontface = "bold") +
+    annotate("text", x = 50, y = 11.2, label = board_data$board_subtitle[1],
+             color = "#D8E2F3", size = 5.5) +
+  
+## Column header annotations    
+      
+    annotate("text", x = 11, y = 10.45, label = "RANK",
+         color = "#AFC4E8", size = 4.5, fontface = "bold") +
+    annotate("text", x = 35, y = 10.45, label = "PLAYER",
+         color = "#AFC4E8", size = 4.5, fontface = "bold") +
+    annotate("text", x = 63, y = 10.45, label = "GAME",
+         color = "#AFC4E8", size = 4.5, fontface = "bold") +
+    annotate("text", x = 83, y = 10.45, label = "VALUE",
+         color = "#AFC4E8", size = 4.5, fontface = "bold") +
+  # Draw one row rectangle per leaderboard entry.
+  # The highlighted play is shown in gold.   
+    geom_rect(
+      aes(xmin = 5, xmax = 95, ymin = y - 0.34, ymax = y + 0.34,
+          fill = highlight),
+      color = "#E8EEF7",
+      linewidth = 0.35
+    ) +
+    scale_fill_manual(
+      values = c("FALSE" = "#0B1B2B", "TRUE" = "#D99A25"),
+      guide = "none"
+    ) +
+  # Add the rank, player, game, and metric value text to each row.  
+    geom_text(aes(x = 11, label = rank_label),
+          color = "white", size = 7, fontface = "bold") +
+
+    geom_text(aes(x = 35, label = player_label),
+          color = "white", size = 5.8, fontface = "bold") +
+
+    geom_text(aes(x = 63, label = game_label),
+          color = "white", size = 5.3, fontface = "bold") +
+
+    geom_text(aes(x = 83, label = metric_label),
+          color = "white", size = 5.8, fontface = "bold") +
+    
+    annotate("text", x = 50, y = 0.35,
+             label = "STOLEN BASE SPOTLIGHT | LIVE TRACKING LEADERBOARD",
+             color = "#AFC4E8", size = 4.5, fontface = "bold") +
+    
+    coord_cartesian(xlim = c(0, 100), ylim = c(0, 12.4), expand = FALSE) +
+    theme_void()
+ # Save the scoreboard image if an output filename is provided. 
+  if (!is.null(output_file)) {
+    ggsave(output_file, p, width = 16, height = 9, dpi = 150)
+  }
+  
+  p
+}
+```
+
+# Demo function
+
+```{r}
+# This function simulates the live scoreboard workflow.
+# Given a specific game and play, it checks whether the play appears in any top-10 leaderboard. If it does, it displays that leaderboard and highlights the selected play.
+
+show_live_scoreboard <- function(game_id, play_id, output_file = NULL) {
+  # Find whether the input play triggered any leaderboard.
+  triggered <- all_leaderboard_triggers %>%
+    filter(
+      .data$game_string == .env$game_id,
+      .data$play_per_game == .env$play_id
+    ) %>%
+    arrange(rank, priority)
+  # If the play did not make any top-10 leaderboard, do not create a graphic. 
+  if (nrow(triggered) == 0) {
+    message("No top-10 leaderboard triggered for this play.")
+    return(NULL)
+  }
+ # If the play triggered a leaderboard, select the first/best leaderboard to show. 
+  board_to_show <- all_leaderboard_triggers %>%
+    filter(metric_id == triggered$metric_id[1]) %>%
+    arrange(rank)
+# Create the scoreboard graphic and highlight the input play.  
+  make_scoreboard_leaderboard(
+    board_data = board_to_show,
+    highlight_game = game_id,
+    highlight_play = play_id,
+    output_file = output_file
+  )
+}
+```
+
+```{r}
+# Pull the top-10 catcher throw velocity leaderboard as a table.
+# This is useful for checking that the leaderboard logic worked before making graphics.
+
+top_10_throw_velo <- all_leaderboard_triggers %>%
+  filter(metric_id == "catcher_throw_velo") %>%
+  arrange(rank)
+
+top_10_throw_velo
+```
+
+
+## Example use case:
+
+```{r}
+# Example scoreboard for a play that triggered the runner top-speed leaderboard.
+
+show_live_scoreboard(
+  game_id = 'y1_d166_SZJ_ANI',
+  play_id = 340,
+  output_file = "scoreboard_demo_runner_speed.png"
+)
+```
+
+```{r}
+# Example scoreboard for a play that triggered the runner jump leaderboard.
+
+show_live_scoreboard(
+  game_id = 'y1_d202_PHD_VAS',
+  play_id = 43,
+  output_file = "scoreboard_demo_runner_jump.png"
+)
+```
+
+
+```{r}
+# Example scoreboard for a play that triggered the catcher pop-time leaderboard.
+
+show_live_scoreboard(
+  game_id = 'y1_d111_XGM_PHD',
+  play_id = 155,
+  output_file = "scoreboard_demo_catcher_pop_time.png"
+)
+```
+
+```{r}
+# Example scoreboard for a play that triggered the catcher throw-velocity leaderboard.
+
+show_live_scoreboard(
+  game_id = 'y1_d163_FNQ_PHD',
+  play_id = 66,
+  output_file = "scoreboard_demo_catcher_throw_velo.png"
+)
+```
+
+## Setup data for modeling:
+
+```{r}
+# Create the clean modeling dataset used by the stolen base modeling file.
+# This takes the full runner/catcher table and creates model-friendly outcome columns.
+
+modeling_data <- steal_attempts_full %>%
+  mutate(
+    # Keep the original outcome column for reference.
+    outcome_raw = outcome,
+     # Standardize the outcome text so Safe and caught stealing plays can be identified consistently.
+    outcome_clean = str_to_lower(str_trim(as.character(outcome))),
+    # Clean outcome into a model-friendly version.
+    outcome_model = case_when(
+      outcome_clean == "safe" ~ "Safe",
+      str_detect(outcome_clean, "caught") ~ "Out",
+      TRUE ~ NA_character_
+    ),
+    
+    # Binary version for ROC/AUC and threshold selection.
+    safe_binary = if_else(outcome_model == "Safe", 1, 0),
+    
+    # Factor version for classification models like random forest.
+    outcome_factor = factor(outcome_model, levels = c("Out", "Safe"))
+  ) %>%
+  filter(
+  # Keep only plays with valid outcomes and all four model input metrics.
+    outcome_model %in% c("Safe", "Out"),
+    !is.na(top_speed_mph),
+    !is.na(jump),
+    !is.na(pop_time),
+    !is.na(throw_velo)
+  ) %>%
+  select(
+    game_string,
+    play_per_game,
+    runner,
+    catcher,
+    outcome_raw,
+    outcome_model,
+    safe_binary,
+    outcome_factor,
+    top_speed,
+    top_speed_mph,
+    jump,
+    pop_time,
+    throw_velo,
+    exchange_time,
+    flight_time,
+    arrival_dist_to_2b
+  )
+
+# Save the modeling dataset so the modeling file can load it directly.
+saveRDS(modeling_data, "steal_modeling_data.rds")
+```
+
+
+

@@ -1,0 +1,303 @@
+---
+title: "SMT Data Challenge"
+date: "2026-06-23"
+output: html_document
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+
+source('SMT_Data_Starter.R')
+```
+
+
+```{r setup, message=FALSE, warning=FALSE}
+# set coordinates for bases
+SECOND_BASE <- c(x = 0, y = 90 * sqrt(2))   # (0, 127.28) ft
+FIRST_BASE  <- c(x = 45 * sqrt(2), y = 45 * sqrt(2))
+```
+
+## Candidate plays from lineups
+
+The following must be true: runner is on 1B, 2B empty, not a pickoff play. Runner on 3B is allowed but flagged (1st and 3rd steal dynamics differ). We also compute next-play context with continuity guards so we will not compare across half innings.
+
+```{r candidates-lineups}
+# lineups.csv is NOT always unique on (game_string, play_per_game): a small
+# number of games, 43, have consecutive at-bats logged under the same
+# play_per_game id, plus some exact duplicate rows. player_positions/ball_events
+# only key on (game_string, play_per_game), so that pair must be unique here or
+# every downstream join, especially later when using the runner-tracking join, becomes
+# many-to-many and duplicates rows. Keep the latest at_bat per key,
+# since it's the state immediately preceding the physically tracked play.
+
+lineups_clean <- lineups %>%
+  mutate(play_per_game = as.numeric(play_per_game),
+         at_bat        = as.numeric(at_bat)) %>%
+  arrange(game_string, play_per_game, at_bat) %>%
+  group_by(game_string, play_per_game) %>%
+  slice_max(at_bat, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+candidates <- lineups_clean %>%
+  group_by(game_string) %>%
+  mutate(
+    next_on_1b       = lead(on_1b),
+    next_on_2b       = lead(on_2b),
+    next_on_3b       = lead(on_3b),
+    next_at_bat      = lead(at_bat),
+    next_half_inning = lead(half_inning),
+    next_inning      = lead(inning),
+    is_last_play_of_half = is.na(next_half_inning) |
+                           next_half_inning != half_inning |
+                           next_inning != inning
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(on_1b), is.na(on_2b), !is_pickoff) %>%
+  mutate(runner_on_3b_flag = !is.na(on_3b))
+
+nrow(candidates)
+```
+
+## Per-play event summaries from ball_events
+Require a pitch, event code 1
+
+and
+
+Exclude: 
+-ball hit into play, event code 4
+-pickoff throws, event code 6
+
+Catcher throw is kept as a feature (contested vs. uncontested), not a
+filter because that would silently drop uncontested steals.
+
+```{r events-per-play}
+candidate_games <- unique(candidates$game_string)
+
+
+events_raw <- ball_events %>%
+  filter(game_string %in% candidate_games) %>%
+  collect() %>%
+  mutate(across(c(play_per_game, timestamp, player_id, ball_eventcode),
+                as.numeric))
+
+events_per_play <- events_raw %>%
+  group_by(game_string, play_per_game) %>%
+  summarize(
+    event_codes        = str_c(ball_eventcode[order(timestamp)], collapse = ","),
+    has_pitch          = any(ball_eventcode == 1),
+    ball_hit_into_play = any(ball_eventcode == 4),
+    pickoff_throw      = any(ball_eventcode == 6),
+    pitch_timestamp    = suppressWarnings(min(timestamp[ball_eventcode == 1])),
+    # catcher, player_id, acquiring the pitch, then throwing (event 3 then 8)
+    catcher_acquire_ts = suppressWarnings(
+                           min(timestamp[ball_eventcode %in% c(2, 7) &
+                                         player_id == 2])),
+    catcher_throw      = any(ball_eventcode %in% c(3, 8) & player_id == 2),
+    catcher_throw_ts   = suppressWarnings(
+                           min(timestamp[ball_eventcode %in% c(3, 8) &
+                                         player_id == 2])),
+    #middle infielder, 2B=4 or SS=6, receiving = someone covering the bag
+    acquired_by_mif    = any(ball_eventcode == 2 & player_id %in% c(4, 6)),
+    .groups = "drop"
+  ) %>%
+  mutate(across(c(pitch_timestamp, catcher_acquire_ts, catcher_throw_ts),
+                ~ if_else(is.infinite(.x), NA_real_, .x)))
+
+candidates <- candidates %>%
+  left_join(events_per_play, by = c("game_string", "play_per_game")) %>%
+  filter(has_pitch,
+         !ball_hit_into_play | is.na(ball_hit_into_play),
+         !pickoff_throw      | is.na(pickoff_throw))
+
+
+nrow(candidates)
+```
+
+## Track runner movement (player_id 11 = runner on 1B)
+
+Confirm a genuine attempt using progress toward 2B and an engineered variable called break timing. Break timing is how long after the pitch has the runner on 1B committed to a real sprint towards 2nd.
+These summaries double as ML features.
+
+```{r runner-movement}
+runner_tracks <- player_positions %>%
+  filter(game_string %in% candidate_games) %>%
+  collect() %>%
+  mutate(across(c(play_per_game, timestamp, player_id, field_x, field_y),
+                as.numeric)) %>%
+  filter(player_id == 11) %>%
+  inner_join(candidates %>%
+               select(game_string, play_per_game, pitch_timestamp,
+                      catcher_acquire_ts),
+             by = c("game_string", "play_per_game"))
+
+
+runner_summary <- runner_tracks %>%
+  filter(!is.na(pitch_timestamp)) %>%
+  arrange(game_string, play_per_game, timestamp) %>%
+  group_by(game_string, play_per_game) %>%
+  mutate(
+    dist_to_2b = sqrt((field_x - SECOND_BASE["x"])^2 +
+                      (field_y - SECOND_BASE["y"])^2),
+    dt         = (timestamp - lag(timestamp)) / 1000,          # seconds
+    # speed of approach toward 2B (ft/s); positive = closing on the bag
+    closing_speed = -(dist_to_2b - lag(dist_to_2b)) / dt
+  ) %>%
+  summarize(
+    # lead distance: distance from 1B at pitch release
+    lead_dist_at_pitch = sqrt(
+      (first(field_x[timestamp >= pitch_timestamp]) - FIRST_BASE["x"])^2 +
+      (first(field_y[timestamp >= pitch_timestamp]) - FIRST_BASE["y"])^2),
+    # 1500 msec or 1.5 sec is an arbitrary time used to detect when a runner got a jump 1.5 secs before a pitch
+    # relied on domain knowledge for it
+    min_dist_to_2b  = min(dist_to_2b[timestamp >= pitch_timestamp - 1500],
+                          na.rm = TRUE),
+    # break time: first sustained sprint toward 2B (>= 12 ft/s = 8.2mph),
+    # in seconds relative to pitch release (negative = broke before release)
+    # 12 was chosen to catch the runners start of acceleration
+    break_time = (suppressWarnings(
+                    min(timestamp[closing_speed >= 12 &
+                                  timestamp >= pitch_timestamp - 1500],
+                        na.rm = TRUE)) - first(pitch_timestamp)) / 1000,
+    max_speed_to_2b = max(closing_speed[timestamp >= pitch_timestamp - 1500],
+                          na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(across(where(is.numeric), ~ if_else(is.infinite(.x), NA_real_, .x)))
+
+candidates <- candidates %>%
+  left_join(runner_summary, by = c("game_string", "play_per_game"))
+```
+
+## Outcome labeling and attempt confirmation
+
+* Excluding walks/HBP
+* Inning-ending caught stealing plays get their own label instead
+  of a cross-half-inning misread.
+* Wild pitch/Pass ball separation: a runner who breaks only after the catcher already
+  has (or misses) the ball advanced on a wild pitch / passed ball are not considered steals.
+
+```{r steal-attempts}
+all_steal_outcomes <- candidates %>%
+  mutate(
+    walk_like = !is_last_play_of_half &
+                !is.na(next_on_1b) & next_on_1b == batter &
+                !is.na(next_on_2b) & next_on_2b == on_1b,
+
+    outcome = case_when(
+      walk_like                                          ~ "Walk/HBP advance",
+      !is_last_play_of_half & !is.na(next_on_2b) &
+        next_on_2b == on_1b                              ~ "Safe",
+      !is_last_play_of_half &
+        (is.na(next_on_1b) | next_on_1b != on_1b) &
+        (is.na(next_on_2b) | next_on_2b != on_1b) &
+        (is.na(next_on_3b) | next_on_3b != on_1b) &
+        next_at_bat == at_bat                            ~ "Out",
+      is_last_play_of_half                               ~ "Out (inning-ending, verify)",
+      TRUE                                               ~ "Ambiguous"
+    ),
+
+    # Genuine attempt: got close to 2B AND broke near pitch release
+    confirmed_attempt = !is.na(min_dist_to_2b) & min_dist_to_2b < 30 &
+                        !is.na(break_time)     & break_time < 1.0,
+
+    # Break well AFTER catcher acquisition -> WP/PB advance, not a steal
+    likely_wp_pb = !is.na(break_time) & !is.na(catcher_acquire_ts) &
+                   !is.na(pitch_timestamp) &
+                   (pitch_timestamp + break_time * 1000) > catcher_acquire_ts + 300,
+
+    contested = catcher_throw & acquired_by_mif
+  )
+
+steal_attempts <- all_steal_outcomes %>%
+  filter(outcome %in% c("Safe", "Out", "Out (inning-ending, verify)"),
+         confirmed_attempt,
+         !likely_wp_pb) %>%
+  select(game_string, play_per_game, inning, half_inning, at_bat,
+         runner = on_1b, batter, pitcher, catcher,
+         outcome, contested, runner_on_3b_flag,
+         lead_dist_at_pitch, break_time, min_dist_to_2b, max_speed_to_2b,
+         catcher_throw, event_codes)
+
+steal_attempts
+```
+
+## Diagnostics
+
+```{r diagnostics}
+#checking to make sure numbers look correct before finalizing steal attempts
+cat("Candidate plays (base state + event filters):",
+    nrow(candidates), "\n")
+cat("Confirmed steal attempts of 2B:", nrow(steal_attempts), "\n\n")
+
+steal_attempts %>% count(outcome, contested)
+
+cat("\nBreak time (sec relative to pitch release):\n")
+summary(steal_attempts$break_time)
+
+cat("\nLead distance at pitch (ft):\n")
+summary(steal_attempts$lead_dist_at_pitch)
+
+#break_time should be roughly bimodal if WP/PB
+# advances are sneaking through where real steals cluster near 0 and WP/PB well after.
+ggplot(steal_attempts, aes(break_time, fill = outcome)) +
+  geom_histogram(binwidth = 0.1, alpha = 0.7, position = "identity") +
+  labs(title = "Runner break time relative to pitch release",
+       x = "Break time (sec)", 
+       y = "Plays")
+
+```
+
+## Spot-check ambiguous plays
+
+
+```{r spot-check, eval=FALSE}
+# Eyeball inning-ending CS labels and any borderline plays before training:
+to_verify <- steal_attempts %>%
+  filter(outcome == "Out (inning-ending, verify)")
+
+#animate_play(to_verify$game_string[], to_verify$play_per_game[])
+```
+Went through each of the ambiguous edge case plays by hand and checked if they were steals or not.
+Suspect plays:
+index/play: 21/163, 28/414, 29/53, 43/189
+
+## Animate a specific play 
+
+```{r animate-row-102, eval=FALSE}
+animate_play(steal_attempts$game_string[102], steal_attempts$play_per_game[102])
+```
+
+## Apply manual review corrections
+
+Findings from watching `animate_play()` on each `to_verify` row above.
+Keyed on (game_string, play_per_game) rather than row index, since
+`to_verify`'s row order isn't stable across reruns.
+
+```{r manual-corrections}
+manual_review <- tribble(
+  ~game_string,       ~play_per_game, ~manual_outcome,
+  "y1_d145_ALC_ARN",   163,           "Out",  # confirmed caught stealing
+  "y1_d163_SZJ_ANI",   414,           "exclude",  # 1st-and-3rd break; throw got lead runner at 3B, not a 1st->2nd steal
+  "y1_d164.5_SZJ_ANI", 53,            "Out",      # confirmed caught stealing
+  "y1_d212_QHX_ANI",   189,           "exclude"
+)
+
+steal_attempts <- steal_attempts %>%
+  left_join(manual_review, by = c("game_string", "play_per_game")) %>%
+  mutate(outcome = coalesce(manual_outcome, outcome)) %>%
+  filter(outcome != "exclude") %>%
+  select(-manual_outcome)
+
+cat("Confirmed steal attempts of 2B after manual review:", nrow(steal_attempts), "\n")
+```
+
+
+```{r manual-corrections}
+steal_attempts %>% count(outcome, contested)
+```
+
+```{r}
+saveRDS(steal_attempts, "steal_attempts.rds") 
+saveRDS(runner_tracks, "runner_tracks.rds")
+```
+

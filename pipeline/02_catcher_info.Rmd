@@ -1,0 +1,165 @@
+---
+title: "Catcher Info: Pop Time & Throw Speed"
+date: "2026-07-08"
+output: html_document
+---
+
+This file builds `catcher_info` — pop time, exchange time, and throw speed for
+the catcher's throw to second base on each steal-attempt play.
+
+**Prerequisite:** run `all_steal_outcomes.Rmd` first. This file reuses objects
+already in the environment from that workflow:
+
+- `steal_attempts` — confirmed attempts with final Safe/Out labels (post manual review)
+- `SECOND_BASE` — second base coordinates
+- `ball_events`, `ball_positions` — Arrow datasets from `SMT_Data_Starter.R`
+
+`steal_plays` and `steal_games` are derived below directly from `steal_attempts`,
+not from the broader (unconfirmed/ambiguous) `all_steal_outcomes` table.
+
+Event logic per play: pitch (code 1) → catcher receives (code 2, player_id 2) →
+catcher throws (code 3, player_id 2) → middle infielder receives at the bag
+(code 2, player_id 4 or 6). Pop time = catcher receipt → infielder receipt.
+
+```{r key-event-times}
+# Scope to confirmed attempts only (Safe/Out, post manual review) rather than
+# all_steal_outcomes -- that table still carries Ambiguous/Walk-HBP/excluded
+# rows, which would drag irrelevant plays into the throw-tracking join below
+# and make the sanity-check counts read as "all candidates" instead of
+# "confirmed steals."
+steal_plays <- steal_attempts %>%
+  distinct(game_string, play_per_game, outcome)
+steal_games <- unique(steal_plays$game_string)
+
+# Ball events for the steal plays only
+steal_events <- ball_events %>%
+  filter(game_string %in% steal_games) %>%
+  collect() %>%
+  mutate(across(c(play_per_game, timestamp, player_id, ball_eventcode),
+                as.numeric)) %>%
+  semi_join(steal_plays, by = c("game_string", "play_per_game")) %>%
+  arrange(game_string, play_per_game, timestamp)
+
+# Helper: earliest timestamp meeting a condition, NA if none
+first_time <- function(ts, cond) {
+  hits <- ts[cond & !is.na(cond)]
+  if (length(hits) == 0) NA_real_ else min(hits)
+}
+
+# Key event timestamps per play
+event_times <- steal_events %>%
+  group_by(game_string, play_per_game) %>%
+  summarize(
+    pitch_time   = first_time(timestamp, ball_eventcode == 1),
+    # catcher receives the pitch
+    catch_time   = first_time(timestamp,
+                              ball_eventcode == 2 & player_id == 2 &
+                                timestamp >= pitch_time),
+    # catcher releases the throw
+    throw_time   = first_time(timestamp,
+                              ball_eventcode == 3 & player_id == 2 &
+                                timestamp >= catch_time),
+    # 2B (4) or SS (6) receives the throw at the bag
+    receive_time = first_time(timestamp,
+                              ball_eventcode == 2 & player_id %in% c(4, 6) &
+                                timestamp >= throw_time),
+    .groups = "drop"
+  )
+```
+
+```{r throw-tracking}
+# Ball tracking during the throw window (release -> receipt)
+throw_plays <- event_times %>%
+  filter(!is.na(throw_time), !is.na(receive_time)) %>%
+  # guard: one row per play so the tracking join can't double-count frames
+  distinct(game_string, play_per_game, .keep_all = TRUE)
+
+throw_metrics <- ball_positions %>%
+  filter(game_string %in% unique(throw_plays$game_string)) %>%
+  collect() %>%
+  mutate(across(c(play_per_game, timestamp, ball_position_x,
+                  ball_position_y, ball_position_z), as.numeric)) %>%
+  inner_join(throw_plays, by = c("game_string", "play_per_game")) %>%
+  filter(timestamp >= throw_time, timestamp <= receive_time) %>%
+  arrange(game_string, play_per_game, timestamp) %>%
+  group_by(game_string, play_per_game) %>%
+  mutate(
+    dt        = (timestamp - lag(timestamp)) / 1000,          # seconds
+    step_dist = sqrt((ball_position_x - lag(ball_position_x))^2 +
+                     (ball_position_y - lag(ball_position_y))^2 +
+                     (ball_position_z - lag(ball_position_z))^2),
+    speed_mph = if_else(dt > 0, (step_dist / dt) * 0.681818, NA_real_)
+  ) %>%
+  summarize(
+    max_throw_speed_mph = max(speed_mph, na.rm = TRUE),
+    p95_throw_speed_mph = quantile(speed_mph, 0.95, na.rm = TRUE),
+    avg_throw_speed_mph = 0.681818 * sum(step_dist, na.rm = TRUE) /
+                            ((max(timestamp) - min(timestamp)) / 1000),
+    arrival_dist_to_2b  = sqrt((last(ball_position_x) - SECOND_BASE["x"])^2 +
+                               (last(ball_position_y) - SECOND_BASE["y"])^2),
+    n_frames            = n(),
+    .groups = "drop"
+  )
+```
+
+```{r assemble-catcher-info}
+catcher_info <- steal_plays %>%
+  left_join(event_times,   by = c("game_string", "play_per_game")) %>%
+  left_join(throw_metrics, by = c("game_string", "play_per_game")) %>%
+  mutate(
+    pop_time      = (receive_time - catch_time) / 1000,   # catch -> tag receipt
+    exchange_time = (throw_time   - catch_time) / 1000,   # catch -> release
+    flight_time   = (receive_time - throw_time) / 1000,   # release -> receipt
+    throw_to_2b   = !is.na(arrival_dist_to_2b) & arrival_dist_to_2b <= 15
+  ) %>%
+  select(game_string, play_per_game, outcome, pop_time, exchange_time,
+         flight_time, max_throw_speed_mph, p95_throw_speed_mph,
+         avg_throw_speed_mph, throw_to_2b, arrival_dist_to_2b, everything())
+
+catcher_info
+```
+
+```{r sanity-checks}
+# Should be zero — duplicate play keys would corrupt throw metrics
+cat("Duplicate play keys:",
+    steal_plays %>% count(game_string, play_per_game) %>%
+      filter(n > 1) %>% nrow(), "\n")
+
+cat("Steal plays:", nrow(steal_plays), "\n")
+cat("Plays with a catcher throw:", sum(!is.na(catcher_info$throw_time)), "\n")
+cat("Throws that arrived near 2B:", sum(catcher_info$throw_to_2b, na.rm = TRUE), "\n")
+
+# Expected MiLB ranges: pop time ~1.9-2.3s, exchange ~0.7-1.0s, velo ~70-85 mph.
+# Values far outside these suggest event-matching issues or noisy frames.
+catcher_info %>%
+  filter(throw_to_2b) %>%
+  select(pop_time, exchange_time, max_throw_speed_mph, avg_throw_speed_mph) %>%
+  summary()
+```
+
+## Pop time / exchange time / throw speed by outcome (Safe vs. Out)
+
+```{r outcome-summary-safe}
+# pop_time <= 3.5s screens out plays where the throw was deflected/overthrown
+# and "receive_time" latched onto a much later ball-acquired event instead of
+# a clean catch-and-tag (visible in ball_eventcode as bounce/deflection codes
+# between the throw and the matched receive). Real pop times here top out
+# around 2.05s, then jump straight to 4.15s+ for these mismatched plays.
+cat("Safe\n")
+catcher_info %>%
+  filter(throw_to_2b, outcome == "Safe", pop_time <= 3.5) %>%
+  select(pop_time, exchange_time, max_throw_speed_mph, avg_throw_speed_mph) %>%
+  summary()
+```
+
+```{r outcome-summary-out}
+# Includes "Out (inning-ending, verify)": manual review only relabeled one
+# such play to a bare "Out", so restricting to outcome == "Out" alone would
+# leave a single-row sample (all summary stats collapse to one value).
+cat("Out\n")
+catcher_info %>%
+  filter(throw_to_2b, outcome %in% c("Out", "Out (inning-ending, verify)"),
+         pop_time <= 3.5) %>%
+  select(pop_time, exchange_time, max_throw_speed_mph, avg_throw_speed_mph) %>%
+  summary()
+```

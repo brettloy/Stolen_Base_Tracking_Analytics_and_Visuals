@@ -1,0 +1,320 @@
+---
+title: "Steal Outcome Modeling"
+author: "Brady Schenck"
+date: "2026-07-17"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(pROC)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(xgboost)
+modeling_data <- readRDS("steal_modeling_data.rds")
+```
+
+## Train/test split
+
+```{r}
+set.seed(123)
+
+train_index <- sample(
+  1:nrow(modeling_data),
+  size = 0.7 * nrow(modeling_data)
+)
+
+train_data <- modeling_data[train_index, ]
+test_data  <- modeling_data[-train_index, ]
+```
+
+## Model 1: Multiple logistic regression
+
+```{r}
+logit_model <- glm(
+  safe_binary ~ top_speed + jump,
+  data = train_data,
+  family = binomial
+)
+
+summary(logit_model)
+```
+## Predictions
+
+```{r}
+test_data <- test_data %>%
+  mutate(
+    logit_prob = predict(
+      logit_model,
+      newdata = test_data,
+      type = "response"
+    ),
+    logit_pred = if_else(logit_prob >= 0.75, "Safe", "Out")
+  )
+
+table(
+  Predicted = test_data$logit_pred,
+  Actual = test_data$outcome_factor
+)
+
+exp(coef(logit_model))
+```
+
+## Model 2: Decision Tree
+
+```{r}
+library(rpart)
+library(rpart.plot)
+
+tree_model <- rpart(
+  outcome_factor ~ top_speed + jump,
+  data = train_data,
+  method = "class"
+)
+
+rpart.plot(tree_model)
+```
+## Predictions
+
+```{r}
+tree_prob <- predict(
+  tree_model,
+  newdata = test_data,
+  type = "prob"
+)[, "Safe"]
+
+tree_pred <- if_else(tree_prob >= 0.5, "Safe", "Out")
+
+table(
+  Predicted = tree_pred,
+  Actual = test_data$outcome_factor
+)
+```
+## Model 3: Random forest
+
+```{r}
+set.seed(123)
+
+rf_model <- randomForest(
+  outcome_factor ~ top_speed + jump,
+  data = train_data,
+  ntree = 500,
+  importance = TRUE
+)
+```
+
+## Predictions
+
+```{r}
+rf_prob <- predict(
+  rf_model,
+  newdata = test_data,
+  type = "prob"
+)[, "Safe"]
+
+rf_pred <- if_else(rf_prob >= 0.643, "Safe", "Out")
+
+table(
+  Predicted = factor(rf_pred, levels = c("Out", "Safe")),
+  Actual = factor(test_data$outcome_factor, levels = c("Out", "Safe"))
+)
+```
+```{r}
+library(pROC)
+
+rf_roc <- roc(
+  response = test_data$safe_binary,
+  predictor = rf_prob
+  )
+
+rf_best_thresh <- coords(
+  rf_roc,
+  x = "best",
+  best.method = "youden",
+  ret = "threshold"
+)
+
+rf_best_thresh
+```
+
+## Model 4: 
+
+```{r}
+library(xgboost)
+library(pROC)
+library(tidyverse)
+
+# Matrix inputs
+
+x_train <- train_data %>%
+  select(top_speed, jump) %>%
+  as.matrix()
+
+y_train <- train_data$safe_binary
+
+x_test <- test_data %>%
+  select(top_speed, jump) %>%
+  as.matrix()
+
+y_test <- test_data$safe_binary
+
+# Convert to XGBoost format
+
+dtrain <- xgb.DMatrix(
+  data = x_train,
+  label = y_train
+)
+
+dtest <- xgb.DMatrix(
+  data = x_test,
+  label = y_test
+)
+
+# XGBoost Model
+
+set.seed(123)
+
+xgb_model <- xgboost(
+  data = dtrain,
+  objective = "binary:logistic",
+  eval_metric = "auc",
+  nrounds = 50,
+  max_depth = 2,
+  eta = 0.1,
+  subsample = 0.8,
+  colsample_bytree = 1,
+  verbose = 0
+)
+
+xgb_model
+```
+
+## Predictions
+
+```{r}
+xgb_prob <- predict(
+  xgb_model,
+  newdata = dtest
+)
+
+summary(xgb_prob)
+
+xgb_pred <- if_else(
+  xgb_prob >= 0.7376609,
+  "Safe",
+  "Out"
+)
+
+table(
+  Predicted = factor(xgb_pred_50, levels = c("Out", "Safe")),
+  Actual = factor(test_data$outcome_factor, levels = c("Out", "Safe"))
+)
+
+xgb_accuracy <- mean(xgb_pred == test_data$outcome_factor)
+
+xgb_auc <- pROC::auc(
+  response = test_data$safe_binary,
+  predictor = xgb_prob
+)
+
+xgb_accuracy
+```
+
+```{r}
+xgb_roc <- roc(
+  response = test_data$safe_binary,
+  predictor = xgb_prob
+)
+
+xgb_best_thresh <- coords(
+  xgb_roc,
+  x = "best",
+  best.method = "youden",
+  ret = "threshold"
+)
+
+xgb_best_thresh
+```
+
+## Feature importance
+
+```{r}
+
+xgb_importance <- xgb.importance(
+  feature_names = colnames(x_train),
+  model = xgb_model
+)
+
+xgb_importance
+
+xgb.plot.importance(xgb_importance)
+```
+## Model 5: Bootstrapping
+
+```{r}
+set.seed(123)
+
+B <- 1000
+
+bootstrap_coefs <- replicate(B, {
+  
+  boot_data <- train_data %>%
+    slice_sample(
+      n = nrow(train_data),
+      replace = TRUE
+    )
+  
+  boot_model <- glm(
+    safe_binary ~ top_speed + jump,
+    data = boot_data,
+    family = binomial
+  )
+  
+  coef(boot_model)
+})
+
+bootstrap_coefs <- t(bootstrap_coefs)
+
+bootstrap_coefs <- as.data.frame(bootstrap_coefs)
+
+head(bootstrap_coefs)
+```
+## Results
+
+```{r}
+bootstrap_summary <- tibble(
+  term = names(coef(logit_model)),
+  original_estimate = coef(logit_model),
+  bootstrap_mean = colMeans(bootstrap_coefs, na.rm = TRUE),
+  lower_95 = apply(bootstrap_coefs, 2, quantile, 0.025, na.rm = TRUE),
+  upper_95 = apply(bootstrap_coefs, 2, quantile, 0.975, na.rm = TRUE)
+)
+
+bootstrap_summary
+```
+
+```{r}
+bootstrap_coefs_long <- bootstrap_coefs %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "term",
+    values_to = "coefficient"
+  )
+
+ggplot(bootstrap_coefs_long, aes(x = coefficient)) +
+  geom_histogram(bins = 30) +
+  facet_wrap(~ term, scales = "free") +
+  labs(
+    title = "Bootstrap Distributions of Logistic Regression Coefficients",
+    x = "Coefficient Estimate",
+    y = "Count"
+  )
+```
+
+
+

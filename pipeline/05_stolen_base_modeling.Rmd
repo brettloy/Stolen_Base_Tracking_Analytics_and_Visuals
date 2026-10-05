@@ -1,0 +1,552 @@
+---
+title: "Steal Outcome Modeling"
+author: "Team 305"
+date: "2026-07-17"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# This file uses the cleaned modeling dataset created in the leaderboard file.
+# The leaderboard file already calculated the runner and catcher metrics, so this file focuses only on modeling Safe% and building the model-based scoreboard graphic.
+
+# The goal is to compare a few possible models, choose a final Safe% model, and use that model to find plays that beat expectation.
+# Those plays become scoreboard prompts such as GOOD SLIDE! or GOOD TAG!
+
+library(tidyverse)
+library(pROC)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(ggplot2)
+model_data <- readRDS("steal_modeling_data.rds")
+```
+
+
+## Train/test split
+
+```{r}
+# Split the plays into training and testing data.
+# The model learns from the training set.
+# The test set is saved for final evaluation.
+
+set.seed(123)
+
+train_index <- sample(
+  1:nrow(model_data),
+  size = floor(0.70 * nrow(model_data))
+)
+
+train_data <- model_data[train_index, ]
+test_data  <- model_data[-train_index, ]
+
+# Check that both Safe and Out plays appear in both sets.
+# AUC cannot be calculated if either set only has one outcome type.
+
+train_data %>%
+  count(outcome_model)
+
+test_data %>%
+  count(outcome_model)
+```
+
+## Thresholds and evaluation functions
+
+```{r}
+# The models return a Safe%, not a direct Safe/Out decision.
+# To turn that probability into a prediction, we need a cutoff.
+
+# Example:
+# If the threshold is 0.60, then:
+#   Safe% >= 60% predicts Safe
+#   Safe% < 60% predicts Out
+
+# Instead of assuming 50%, this function tests thresholds from 5% to 95% and picks the one with the best balanced accuracy on the training data.
+# Balanced accuracy is useful because it rewards the model for identifying both Safe and Out plays instead of only favoring the more common outcome.
+
+choose_best_threshold <- function(actual, prob) {
+  
+  map_dfr(seq(0.05, 0.95, by = 0.01), function(threshold) {
+    
+    pred <- if_else(prob >= threshold, 1, 0)
+    
+    tp <- sum(pred == 1 & actual == 1)
+    tn <- sum(pred == 0 & actual == 0)
+    fp <- sum(pred == 1 & actual == 0)
+    fn <- sum(pred == 0 & actual == 1)
+    
+    sensitivity <- if_else(tp + fn == 0, NA_real_, tp / (tp + fn))
+    specificity <- if_else(tn + fp == 0, NA_real_, tn / (tn + fp))
+    accuracy <- (tp + tn) / length(actual)
+    balanced_accuracy <- mean(c(sensitivity, specificity), na.rm = TRUE)
+    
+    tibble(
+      threshold = threshold,
+      accuracy = accuracy,
+      sensitivity = sensitivity,
+      specificity = specificity,
+      balanced_accuracy = balanced_accuracy
+    )
+  }) %>%
+    arrange(desc(balanced_accuracy), desc(accuracy)) %>%
+    slice(1)
+}
+
+# This function evaluates each model on the held-out test set.
+# It uses the threshold selected from the training set, then calculates:
+#   accuracy = overall percent correct
+#   sensitivity = how well the model identifies Safe plays
+#   specificity = how well the model identifies Out plays
+#   balanced accuracy = average of sensitivity and specificity
+#   AUC = how well the model ranks Safe plays above Out plays by probability
+
+evaluate_model <- function(actual, prob, threshold, model_name) {
+  
+  pred <- if_else(prob >= threshold, 1, 0)
+  
+  tp <- sum(pred == 1 & actual == 1)
+  tn <- sum(pred == 0 & actual == 0)
+  fp <- sum(pred == 1 & actual == 0)
+  fn <- sum(pred == 0 & actual == 1)
+  
+  accuracy <- (tp + tn) / length(actual)
+  sensitivity <- if_else(tp + fn == 0, NA_real_, tp / (tp + fn))
+  specificity <- if_else(tn + fp == 0, NA_real_, tn / (tn + fp))
+  balanced_accuracy <- mean(c(sensitivity, specificity), na.rm = TRUE)
+  
+# Build the ROC curve using the actual result and predicted Safe%.
+roc_curve <- pROC::roc(
+  response = actual,
+  predictor = prob,
+  quiet = TRUE
+)
+
+# Calculate the area under the ROC curve.
+auc_value <- pROC::auc(roc_curve)
+
+# Convert the AUC object into a normal number for the results table.
+auc_value <- as.numeric(auc_value)
+  
+  tibble(
+    model = model_name,
+    threshold = threshold,
+    test_accuracy = accuracy,
+    test_sensitivity = sensitivity,
+    test_specificity = specificity,
+    test_balanced_accuracy = balanced_accuracy,
+    test_auc = auc_value
+  )
+}
+```
+
+## Model 1: Logistic Regression
+
+```{r}
+# Logistic regression is the baseline model.
+# It is simple and easy to explain, but it assumes a more linear relationship.
+
+logit_model <- glm(
+  safe_binary ~ top_speed_mph + jump + pop_time + throw_velo,
+  data = train_data,
+  family = binomial
+)
+
+# Predicted Safe% for the training and test sets.
+
+train_logit_prob <- predict(
+  logit_model,
+  newdata = train_data,
+  type = "response"
+)
+
+test_logit_prob <- predict(
+  logit_model,
+  newdata = test_data,
+  type = "response"
+)
+
+# Pick the best threshold using training-set probabilities only.
+
+logit_threshold <- choose_best_threshold(
+  actual = train_data$safe_binary,
+  prob = train_logit_prob
+)
+
+# Evaluate logistic regression on the held-out test set.
+
+logit_eval <- evaluate_model(
+  actual = test_data$safe_binary,
+  prob = test_logit_prob,
+  threshold = logit_threshold$threshold[1],
+  model_name = "Logistic Regression"
+)
+
+logit_threshold
+logit_eval
+```
+
+## Model 2: Decision tree
+
+```{r}
+# The decision tree is a simple nonlinear comparison model.
+# Unlike logistic regression, it can split plays into rule-based groups.
+# For example, it can separate plays with fast runners or slow pop times.
+# This gives a useful comparison before trying a random forest.
+
+set.seed(123)
+
+tree_model <- rpart(
+  outcome_factor ~ top_speed_mph + jump + pop_time + throw_velo,
+  data = train_data,
+  method = "class",
+  control = rpart.control(
+    cp = 0.01,
+    minsplit = 10
+  )
+)
+
+# Plot the tree so the model logic can be interpreted visually.
+
+rpart.plot(tree_model)
+
+# Predicted Safe% from the tree model.
+
+train_tree_prob <- predict(
+  tree_model,
+  newdata = train_data,
+  type = "prob"
+)[, "Safe"]
+
+test_tree_prob <- predict(
+  tree_model,
+  newdata = test_data,
+  type = "prob"
+)[, "Safe"]
+
+# Pick the best threshold using the training set.
+
+tree_threshold <- choose_best_threshold(
+  actual = train_data$safe_binary,
+  prob = train_tree_prob
+)
+
+# Evaluate the decision tree on the held-out test set.
+
+tree_eval <- evaluate_model(
+  actual = test_data$safe_binary,
+  prob = test_tree_prob,
+  threshold = tree_threshold$threshold[1],
+  model_name = "Decision Tree"
+)
+
+tree_threshold
+tree_eval
+```
+
+## Model 3: Random forest model
+
+```{r}
+# Random forest is tested as a more flexible comparison model.
+# It builds many decision trees and averages them together.
+# This can help capture nonlinear relationships between runner and catcher metrics, but it can also overfit when the dataset is small or noisy.
+
+set.seed(123)
+
+rf_model <- randomForest(
+  outcome_factor ~ top_speed_mph + jump + pop_time + throw_velo,
+  data = train_data,
+  ntree = 500,
+  mtry = 2,
+  nodesize = 5,
+  importance = TRUE
+)
+
+rf_model
+
+## Random forest threshold
+
+# The random forest also gives a Safe% for each play.
+# For threshold selection, I use the out-of-bag probabilities from the random forest.
+# These are better than regular training predictions because each row is predicted by trees that did not train on that row.
+
+train_rf_prob <- rf_model$votes[, "Safe"]
+
+test_rf_prob <- predict(
+  rf_model,
+  newdata = test_data,
+  type = "prob"
+)[, "Safe"]
+
+rf_threshold <- choose_best_threshold(
+  actual = train_data$safe_binary,
+  prob = train_rf_prob
+)
+
+rf_eval <- evaluate_model(
+  actual = test_data$safe_binary,
+  prob = test_rf_prob,
+  threshold = rf_threshold$threshold[1],
+  model_name = "Random Forest"
+)
+
+rf_threshold
+rf_eval
+```
+
+```{r}
+## Compare model results
+
+# This table compares the three model types on the same test set.
+# Test AUC measures how well the model ranks actual Safe plays above actual Out plays.
+# Balanced accuracy checks whether the chosen threshold separates both classes well.
+# The final model is chosen based on both performance and whether the probabilities make sense for a scoreboard graphic.
+
+model_comparison <- bind_rows(
+  logit_eval,
+  tree_eval,
+  rf_eval
+) %>%
+  arrange(desc(test_auc), desc(test_balanced_accuracy))
+
+model_comparison
+```
+
+## Final Safe% Model:
+
+```{r}
+# Based on the model comparison, logistic regression is used as the final Safe% model.
+# It gives smoother probability estimates than the decision tree and is easier to explain in a fan-facing scoreboard setting
+# The model is not meant to replace the call on the field. It is used to find expectation-breaking plays that can be highlighted for fans.
+
+final_threshold <- logit_threshold$threshold[1]
+
+# Refit the final logistic model using all available labeled plays.
+# This gives the final Safe% model the most data possible before generating scoreboard examples.
+
+final_logit_model <- glm(
+  safe_binary ~ top_speed_mph + jump + pop_time + throw_velo,
+  data = model_data,
+  family = binomial
+)
+
+safe_probability_table <- model_data %>%
+  mutate(
+    # Predicted probability that the runner is safe.
+    safe_prob = predict(
+      final_logit_model,
+      newdata = model_data,
+      type = "response"
+    ),
+    # Convert probability to a scoreboard-friendly percentage.
+    safe_pct = round(100 * safe_prob, 0),
+    # Convert Safe% into a Safe/Out prediction using the selected threshold.
+    model_prediction = if_else(
+      safe_prob >= final_threshold,
+      "Safe",
+      "Out"
+    )
+  )
+
+safe_probability_table %>%
+  select(
+    game_string,
+    play_per_game,
+    runner,
+    catcher,
+    outcome_model,
+    safe_pct,
+    model_prediction,
+    top_speed_mph,
+    jump,
+    pop_time,
+    throw_velo
+  ) %>%
+  arrange(desc(safe_pct)) %>%
+  head(10)
+
+saveRDS(safe_probability_table, "safe_probability_table.rds")
+```
+```{r}
+## Model spotlight plays
+
+# These are plays where the model expectation and the actual result disagree.
+# They are the most useful plays for scoreboard storytelling.
+
+# GOOD TAG:
+# The model expected the runner to be safe, but the actual result was Out.
+
+# GOOD SLIDE:
+# The model expected the runner to be out, but the actual result was Safe.
+
+# These labels are fan-facing prompts, not definitive claims about slide or tag quality.
+
+model_moments <- safe_probability_table %>%
+  mutate(
+    scoreboard_label = case_when(
+      safe_prob >= 0.70 & outcome_model == "Out" ~ "GOOD TAG!",
+      safe_prob <= 0.40 & outcome_model == "Safe" ~ "GOOD SLIDE!",
+      TRUE ~ NA_character_
+    ),
+    
+    model_story = case_when(
+      scoreboard_label == "GOOD TAG!" ~
+        "Model expected the runner to be safe, but the defense created an out.",
+      
+      scoreboard_label == "GOOD SLIDE!" ~
+        "Model expected the runner to be out, but the runner beat the expectation.",
+      
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(scoreboard_label))
+
+model_moments %>%
+  select(
+    game_string,
+    play_per_game,
+    runner,
+    catcher,
+    outcome_model,
+    safe_pct,
+    model_prediction,
+    scoreboard_label,
+    model_story,
+    top_speed_mph,
+    jump,
+    pop_time,
+    throw_velo
+  ) %>%
+  arrange(scoreboard_label, desc(safe_pct))
+
+model_moments %>%
+  count(scoreboard_label)
+
+saveRDS(model_moments, "model_moments.rds")
+```
+
+```{r}
+# Pick one example GOOD SLIDE! play for the scoreboard graphic.
+# This selects the Safe play with the lowest model Safe%, meaning it beat the model expectation the most.
+
+good_slide_example <- model_moments %>%
+  filter(scoreboard_label == "GOOD SLIDE!") %>%
+  arrange(safe_prob) %>%
+  slice(1)
+
+good_slide_example
+```
+
+```{r}
+make_model_scoreboard <- function(play_row, output_file = NULL) {
+  # Create the text labels that will appear on the scoreboard.
+  plot_data <- play_row %>%
+    mutate(
+      safe_pct_label = paste0(safe_pct, "%"),
+      actual_label = paste("Actual Result:", outcome_model),
+      model_label = paste("Model Prediction:", model_prediction),
+      runner_label = paste("Runner:", runner),
+      catcher_label = paste("Catcher:", catcher),
+      speed_label = paste("Top Speed:", round(top_speed_mph, 1), "mph"),
+      jump_label = paste("Jump:", round(jump, 1), "ft/s gained"),
+      pop_label = paste("Pop Time:", round(pop_time, 2), "sec"),
+      throw_label = paste("Throw Velo:", round(throw_velo, 1), "mph")
+    )
+   # Build a one-play scoreboard graphic.
+  # This is separate from the top-10 leaderboards because it highlights a model-based story rather than a leaderboard ranking. 
+  p <- ggplot(plot_data) +
+    # Background and header.
+    annotate("rect", xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf,
+             fill = "#07111F") +
+    
+    annotate("rect", xmin = 0, xmax = 100, ymin = 85, ymax = 100,
+             fill = "#12355B") +
+    # Main scoreboard title.
+    annotate("text", x = 50, y = 95, label = plot_data$scoreboard_label[1],
+             color = "white", size = 14, fontface = "bold") +
+    
+    annotate("text", x = 50, y = 88.5, 
+             label = "This play beat expectation!",
+             color = "#D8E2F3", size = 5) +
+# Safe% panel. 
+    annotate("rect", xmin = 8, xmax = 92, ymin = 60, ymax = 80,
+             fill = "#D99A25", color = "white", linewidth = 0.5) +
+    
+    annotate("text", x = 50, y = 74, label = "SAFE%", color = "white",
+             size = 7, fontface = "bold") +
+    annotate("text", x = 50, y = 66, label = plot_data$safe_pct_label[1],
+             color = "white", size = 16, fontface = "bold") +
+# Actual result and model prediction panels.  
+    annotate("rect", xmin = 8, xmax = 45, ymin = 38, ymax = 56,
+             fill = "#0B1B2B", color = "white", linewidth = 0.4) +
+    annotate("rect", xmin = 55, xmax = 92, ymin = 38, ymax = 56,
+             fill = "#0B1B2B", color = "white", linewidth = 0.4) +
+    
+    annotate("text", x = 26.5, y = 51, label = plot_data$actual_label[1],
+             color = "white", size = 5.5, fontface = "bold") +
+    annotate("text", x = 73.5, y = 51, label = plot_data$model_label[1],
+             color = "white", size = 5.5, fontface = "bold") +
+    
+    annotate("text", x = 26.5, y = 44, label = plot_data$runner_label[1],
+             color = "#D8E2F3", size = 5) +
+    annotate("text", x = 73.5, y = 44, label = plot_data$catcher_label[1],
+             color = "#D8E2F3", size = 5) +
+# Tracking metric panel. 
+    annotate("rect", xmin = 8, xmax = 92, ymin = 10, ymax = 32,
+             fill = "#0B1B2B", color = "white", linewidth = 0.4) +
+    
+    annotate("text", x = 20, y = 27, label = plot_data$speed_label[1],
+             color = "white", size = 5, fontface = "bold") +
+    annotate("text", x = 20, y = 18, label = plot_data$jump_label[1],
+             color = "#D8E2F3", size = 4.8) +
+    
+    annotate("text", x = 68, y = 27, label = plot_data$pop_label[1],
+             color = "white", size = 5, fontface = "bold") +
+    annotate("text", x = 68, y = 18, label = plot_data$throw_label[1],
+             color = "#D8E2F3", size = 4.8) +
+# Footer.    
+    annotate("text", x = 50, y = 4,
+             label = "STOLEN BASE SPOTLIGHT | MODEL EXPECTATION BOARD",
+             color = "#AFC4E8", size = 4.5, fontface = "bold") +
+    
+    coord_cartesian(xlim = c(0, 100), ylim = c(0, 100), expand = FALSE) +
+    theme_void()
+# Save the graphic if an output filename is provided.  
+  if (!is.null(output_file)) {
+    ggsave(output_file, p, width = 16, height = 9, dpi = 150)
+  }
+  
+  p
+}
+```
+
+```{r}
+# Create and save the final example scoreboard graphic.
+
+make_model_scoreboard(
+  play_row = good_slide_example,
+  output_file = "good_slide_scoreboard.png"
+)
+```
+
+```{r}
+# Pick one example GOOD TAG! play for the scoreboard graphic.
+# This selects the Out play with the highest model Safe%, meaning it beat the model expectation the most.
+
+good_tag_example <- model_moments %>%
+  filter(scoreboard_label == "GOOD TAG!") %>%
+  arrange(desc(safe_prob)) %>%
+  slice(1)
+
+good_tag_example
+
+# Create and save the final example scoreboard graphic.
+
+make_model_scoreboard(
+  play_row = good_tag_example,
+  output_file = "good_tag_scoreboard.png"
+)
+```
+

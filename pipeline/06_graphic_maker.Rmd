@@ -1,0 +1,333 @@
+---
+title: "Graphic Maker"
+author: "Team 305"
+date: "2026-07-27"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Load packages used for data manipulation and scoreboard graphics.
+library(tidyverse)
+library(ggplot2)
+
+# Load the saved leaderboard trigger table.
+# This table contains every play that ranked inside the top 10 of at least one leaderboard category: runner top speed, runner jump, catcher pop time, or catcher throw velocity.
+all_leaderboard_triggers <- readRDS("all_leaderboard_triggers.rds")
+# Load the saved model moments table.
+# This table contains plays where the model expectation and actual outcome disagreed, creating possible fan-facing prompts such as GOOD SLIDE! or GOOD TAG!
+model_moments <- readRDS("model_moments.rds")
+```
+
+```{r}
+# This function creates a top-10 leaderboard scoreboard graphic.
+# It is used when a play ranks inside the top 10 for one of the four measured categories.
+# Outputs a ggplot scoreboard graphic, with the triggering play highlighted in gold.
+
+make_scoreboard_leaderboard <- function(board_data,
+  highlight_game = NULL, highlight_play = NULL, output_file = NULL) {
+# If there are no rows in the selected leaderboard, there is nothing to display.  
+  if (nrow(board_data) == 0) return(NULL)
+# Prepare the display labels and row positions for the scoreboard.  
+  plot_data <- board_data %>%
+    arrange(rank) %>%
+    mutate(
+  # Create evenly spaced vertical positions for the 10 leaderboard rows.
+      y = 9.35 - (row_number() - 1) * 0.85,
+  # Format the rank column for display.
+      rank_label = paste0("#", rank),
+  # Runner leaderboards display the runner as "Player ___".
+  # Catcher leaderboards already use a catcher/player label directly.
+      player_label = if_else(
+        str_detect(metric_id, "^catcher"),
+        player_id,
+        paste0("Player ", player_id)
+      ),
+# Identify whether each row is the play that just occurred.
+# This row will be highlighted in gold on the scoreboard.
+      highlight = .data$game_string == .env$highlight_game &
+        .data$play_per_game == .env$highlight_play
+    )
+# Build the scoreboard graphic.  
+  p <- ggplot(plot_data, aes(y = y)) +
+    annotate("rect", xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf,
+             fill = "#07111F") +
+    annotate("rect", xmin = 0, xmax = 100, ymin = 10.95, ymax = 12.4,
+             fill = "#12355B") +
+# Main title and subtitle come from the selected leaderboard category.
+    
+    annotate("text", x = 50, y = 11.8, label = board_data$board_title[1],
+             color = "white", size = 13, fontface = "bold") +
+    annotate("text", x = 50, y = 11.2, label = board_data$board_subtitle[1],
+             color = "#D8E2F3", size = 5.5) +
+    
+    annotate("text", x = 11, y = 10.45, label = "RANK",
+             color = "#AFC4E8", size = 4.5, fontface = "bold") +
+    annotate("text", x = 35, y = 10.45, label = "PLAYER",
+             color = "#AFC4E8", size = 4.5, fontface = "bold") +
+    annotate("text", x = 63, y = 10.45, label = "GAME",
+             color = "#AFC4E8", size = 4.5, fontface = "bold") +
+    annotate("text", x = 83, y = 10.45, label = "VALUE",
+             color = "#AFC4E8", size = 4.5, fontface = "bold") +
+    
+    geom_rect(
+      aes(xmin = 5, xmax = 95, ymin = y - 0.34, ymax = y + 0.34,
+          fill = highlight),
+      color = "#E8EEF7",
+      linewidth = 0.35
+    ) +
+    scale_fill_manual(
+      values = c("FALSE" = "#0B1B2B", "TRUE" = "#D99A25"),
+      guide = "none"
+    ) +
+  # Add row text: rank, player, game, and metric value.   
+    geom_text(aes(x = 11, label = rank_label),
+              color = "white", size = 7, fontface = "bold") +
+    geom_text(aes(x = 35, label = player_label),
+              color = "white", size = 5.8, fontface = "bold") +
+    geom_text(aes(x = 63, label = game_label),
+              color = "white", size = 5.3, fontface = "bold") +
+    geom_text(aes(x = 83, label = metric_label),
+              color = "white", size = 5.8, fontface = "bold") +
+  # Footer label. 
+    annotate("text", x = 50, y = 0.35,
+             label = "STOLEN BASE SPOTLIGHT | LIVE TRACKING LEADERBOARD",
+             color = "#AFC4E8", size = 4.5, fontface = "bold") +
+ # Fix the coordinate system so the layout works like a scoreboard canvas.   
+    coord_cartesian(xlim = c(0, 100), ylim = c(0, 12.4), expand = FALSE) +
+    theme_void()
+ # Save the graphic if the user provides an output filename. 
+  if (!is.null(output_file)) {
+    ggsave(output_file, p, width = 16, height = 9, dpi = 150)
+  }
+  
+  p
+}
+```
+
+```{r}
+# This function creates a one-play model spotlight graphic.
+# It is used when the prediction model and the actual outcome disagree.
+# Outputs a ggplot scoreboard graphic focused on the model's Safe% for that play.
+
+make_model_scoreboard <- function(play_row, output_file = NULL) {
+ # Create clean labels that will appear on the scoreboard. 
+  plot_data <- play_row %>%
+    mutate(
+      safe_pct_label = paste0(safe_pct, "%"),
+      actual_label = paste("Actual Result:", outcome_model),
+      model_label = paste("Model Prediction:", model_prediction),
+      runner_label = paste("Runner:", runner),
+      catcher_label = paste("Catcher:", catcher),
+      speed_label = paste("Top Speed:", round(top_speed_mph, 1), "mph"),
+      jump_label = paste("Jump:", round(jump, 1), "ft/s gained"),
+      pop_label = paste("Pop Time:", round(pop_time, 2), "sec"),
+      throw_label = paste("Throw Velo:", round(throw_velo, 1), "mph")
+    )
+# Build the one-play model spotlight board.  
+  p <- ggplot(plot_data) +
+    annotate("rect", xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf,
+             fill = "#07111F") +
+  # Header bar.
+    annotate("rect", xmin = 0, xmax = 100, ymin = 85, ymax = 100,
+             fill = "#12355B") +
+  # Main model moment label, such as GOOD SLIDE! or GOOD TAG!
+    annotate("text", x = 50, y = 95, label = plot_data$scoreboard_label[1],
+             color = "white", size = 14, fontface = "bold") +
+  # Fan-facing explanation of the model disagreement. 
+    annotate("text", x = 50, y = 88.5, 
+             label = "Runner was expected to be out, but he beat the throw!",
+             color = "#D8E2F3", size = 5) +
+    
+    annotate("rect", xmin = 8, xmax = 92, ymin = 60, ymax = 80,
+             fill = "#D99A25", color = "white", linewidth = 0.5) +
+    
+    annotate("text", x = 50, y = 74, label = "SAFE%", color = "white",
+             size = 7, fontface = "bold") +
+    annotate("text", x = 50, y = 66, label = plot_data$safe_pct_label[1],
+             color = "white", size = 16, fontface = "bold") +
+ # Side-by-side panels comparing the actual result and the model prediction.   
+    annotate("rect", xmin = 8, xmax = 45, ymin = 38, ymax = 56,
+             fill = "#0B1B2B", color = "white", linewidth = 0.4) +
+    annotate("rect", xmin = 55, xmax = 92, ymin = 38, ymax = 56,
+             fill = "#0B1B2B", color = "white", linewidth = 0.4) +
+ # Runner and catcher labels.    
+    annotate("text", x = 26.5, y = 51, label = plot_data$actual_label[1],
+             color = "white", size = 5.5, fontface = "bold") +
+    annotate("text", x = 73.5, y = 51, label = plot_data$model_label[1],
+             color = "white", size = 5.5, fontface = "bold") +
+    
+    annotate("text", x = 26.5, y = 44, label = plot_data$runner_label[1],
+             color = "#D8E2F3", size = 5) +
+    annotate("text", x = 73.5, y = 44, label = plot_data$catcher_label[1],
+             color = "#D8E2F3", size = 5) +
+# Tracking metric panel.    
+    annotate("rect", xmin = 8, xmax = 92, ymin = 10, ymax = 32,
+             fill = "#0B1B2B", color = "white", linewidth = 0.4) +
+    
+    annotate("text", x = 20, y = 27, label = plot_data$speed_label[1],
+             color = "white", size = 5, fontface = "bold") +
+    annotate("text", x = 20, y = 18, label = plot_data$jump_label[1],
+             color = "#D8E2F3", size = 4.8) +
+    
+    annotate("text", x = 68, y = 27, label = plot_data$pop_label[1],
+             color = "white", size = 5, fontface = "bold") +
+    annotate("text", x = 68, y = 18, label = plot_data$throw_label[1],
+             color = "#D8E2F3", size = 4.8) +
+    
+    annotate("text", x = 50, y = 4,
+             label = "STOLEN BASE SPOTLIGHT | MODEL EXPECTATION BOARD",
+             color = "#AFC4E8", size = 4.5, fontface = "bold") +
+    
+    coord_cartesian(xlim = c(0, 100), ylim = c(0, 100), expand = FALSE) +
+    theme_void()
+# Save the graphic if an output filename is provided.  
+  if (!is.null(output_file)) {
+    ggsave(output_file, p, width = 16, height = 9, dpi = 150)
+  }
+  
+  p
+}
+```
+
+```{r}
+# This is the main "graphic maker" function.
+# Given a specific play, it decides which scoreboard graphic should appear.
+# The function accepts a play_id and an optional game_id.
+# game_id is optional because a user may only know the play number.
+# However, play_per_game can repeat across games, so the function asks for a game_string if the play number is ambiguous.
+
+make_graphic_for_play <- function(play_id, game_id = NULL, output_file = NULL) {
+  
+  # If no game_id is provided, search both trigger tables for the play number.
+  if (is.null(game_id)) {
+# Create a small lookup table of all plays that triggered either system. 
+    possible_plays <- bind_rows(
+   # Plays that triggered a model spotlight.
+      model_moments %>%
+        select(game_string, play_per_game) %>%
+        mutate(source = "model"),
+    # Plays that triggered a leaderboard.  
+      all_leaderboard_triggers %>%
+        select(game_string, play_per_game) %>%
+        mutate(source = "leaderboard")
+    ) %>%
+      filter(play_per_game == play_id) %>%
+      distinct(game_string, play_per_game)
+  # If the play number never triggered a graphic, return nothing.
+    if (nrow(possible_plays) == 0) {
+      message("No scoreboard graphic triggered for this play number.")
+      return(NULL)
+    }
+    
+    if (nrow(possible_plays) > 1) {
+      message("This play number appears in multiple games. Choose a game_string from below and rerun with game_id.")
+      print(possible_plays)
+      return(NULL)
+    }
+# If there is only one match, use that game_string automatically. 
+    game_id <- possible_plays$game_string[1]
+  }
+  
+  # Check if the play triggered a model spotlight.
+  model_hit <- model_moments %>%
+    filter(
+      game_string == game_id,
+      play_per_game == play_id
+    )
+  
+  # Check if the play triggered a leaderboard.
+  leaderboard_hit <- all_leaderboard_triggers %>%
+    filter(
+      game_string == game_id,
+      play_per_game == play_id
+    ) %>%
+    arrange(rank, priority)
+  
+  # Priority 1: model spotlight graphic.
+  if (nrow(model_hit) > 0) {
+    
+    if (is.null(output_file)) {
+      output_file <- paste0("model_spotlight_", game_id, "_", play_id, ".png")
+    }
+    
+    message("Model graphic triggered: ", model_hit$scoreboard_label[1])
+    
+    return(
+      make_model_scoreboard(
+        play_row = model_hit %>% slice(1),
+        output_file = output_file
+      )
+    )
+  }
+  
+  # Priority 2: leaderboard graphic.
+  if (nrow(leaderboard_hit) > 0) {
+  # Select the full leaderboard category that the play triggered.
+  # If the play triggered multiple leaderboards, use the strongest one based on rank.  
+    board_to_show <- all_leaderboard_triggers %>%
+      filter(metric_id == leaderboard_hit$metric_id[1]) %>%
+      arrange(rank)
+   # Create a default filename if none is provided. 
+    if (is.null(output_file)) {
+      output_file <- paste0("leaderboard_", leaderboard_hit$metric_id[1], "_", game_id, "_", play_id, ".png")
+    }
+    
+    message("Leaderboard graphic triggered: ", leaderboard_hit$board_title[1])
+    
+    return(
+      make_scoreboard_leaderboard(
+        board_data = board_to_show,
+        highlight_game = game_id,
+        highlight_play = play_id,
+        output_file = output_file
+      )
+    )
+  }
+  
+  # Priority 3: nothing.
+  message("No scoreboard graphic triggered for this play.")
+  return(NULL)
+}
+```
+
+## Test examples
+
+```{r}
+# Example 1: test with a known GOOD SLIDE or GOOD TAG play.
+model_example <- model_moments %>%
+  arrange(scoreboard_label, safe_prob) %>%
+  slice(1)
+
+make_graphic_for_play(
+  play_id = model_example$play_per_game[1],
+  game_id = model_example$game_string[1],
+  output_file = "graphic_maker_model_example.png"
+)
+```
+
+```{r}
+# Example 2: test with a known leaderboard play.
+leaderboard_example <- all_leaderboard_triggers %>%
+  arrange(priority, rank) %>%
+  slice(1)
+
+make_graphic_for_play(
+  play_id = leaderboard_example$play_per_game[1],
+  game_id = leaderboard_example$game_string[1],
+  output_file = "graphic_maker_leaderboard_example.png"
+)
+```
+
+```{r}
+# Example 3: try entering only a play number.
+# If the play number appears in multiple games, the function will print the possible game_string values.
+make_graphic_for_play(
+  play_id = 340
+)
+```
+```
+

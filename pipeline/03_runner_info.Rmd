@@ -1,0 +1,168 @@
+---
+title: "Runner Leaderboard Statistics"
+author: "Team 305"
+date: "2026-07-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Load the runner tracking data and the steal attempt summary data.
+# runner_tracks contains frame-level runner positions.
+# steal_attempts contains one row per steal attempt with play information.
+
+source("SMT_Data_Starter.R")
+runner_tracks <- readRDS("runner_tracks.rds")
+steal_attempts <- readRDS("steal_attempts.rds")
+```
+
+## Gathering instantaneous speeds of runners
+
+```{r}
+# Calculate runner speed at each timestamp within each individual steal attempt.
+# The data is arranged by game, play, and time so that lag() compares each frame to the previous frame in the same play.
+
+
+runner_tracks <- runner_tracks %>%
+  arrange(game_string, play_per_game, timestamp) %>%
+  group_by(game_string, play_per_game) %>%
+  mutate(
+# dt is the time difference between consecutive frames, converted from milliseconds to seconds.
+    dt = (timestamp - lag(timestamp)) / 1000,
+# dx and dy measure how far the runner moved in the x and y directions between frames.
+    dx = field_x - lag(field_x),
+    dy = field_y - lag(field_y),
+# Speed is calculated as distance traveled divided by time elapsed.
+    speed = sqrt(dx^2 + dy^2) / dt
+  ) %>%
+  ungroup()
+```
+
+## Top speeds during each play:
+
+```{r}
+# Calculate a top-speed metric for each steal attempt.
+# Instead of taking one single maximum speed reading, this uses a one-second rolling average.
+# That makes the metric more stable and reduces the impact of one noisy tracking frame.
+
+top_speed <- runner_tracks %>%
+  filter(!is.na(speed), is.finite(speed)) %>%
+  arrange(game_string, play_per_game, timestamp) %>%
+  group_by(game_string, play_per_game) %>%
+  mutate(
+# For each timestamp, calculate the average runner speed over the previous one second.
+    speed_1sec_avg = slider::slide_index_dbl(
+      .x = speed,
+      .i = timestamp,
+      .f = ~ mean(.x, na.rm = TRUE),
+      .before = 1000,
+      .complete = TRUE
+    )
+  ) %>%
+  summarize(
+# The top speed for the play is the highest one-second rolling average.
+    top_speed = max(speed_1sec_avg, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Add the top-speed metric back onto the steal attempt table.
+# any_of() removes an older top_speed column if the chunk has already been run before.
+
+steal_attempts <- steal_attempts %>%
+  select(-any_of("top_speed")) %>%
+  left_join(
+    top_speed,
+    by = c("game_string", "play_per_game")
+  )
+```
+
+# Keeping only first few tenths of a second to look at jumps
+
+```{r}
+# Create a time variable measured relative to pitch release.
+# This lets the jump metric focus on the runner's first 0.4 seconds after the pitch is released.
+
+runner_tracks <- runner_tracks %>%
+  mutate(
+    time_since_pitch =
+      (timestamp - pitch_timestamp)/1000
+  )
+```
+
+# Jump metric:
+
+```{r}
+# Calculate the runner's jump for each steal attempt.
+# Jump is defined as the runner's speed around 0.4 seconds after pitch release minus the runner's speed at pitch release.
+# A larger value means the runner gained speed more quickly at the start of the steal attempt.
+
+jump_metric <- runner_tracks %>%
+  filter(
+    time_since_pitch >= 0,
+    time_since_pitch <= 0.4
+  ) %>%
+  group_by(game_string, play_per_game) %>%
+  summarize(
+# Runner speed closest to the moment of pitch release.
+    speed_at_release = speed[which.min(abs(time_since_pitch))],
+# Runner speed closest to 0.4 seconds after pitch release.
+    speed_at_0_4 = speed[which.min(abs(time_since_pitch - 0.4))],
+# Jump is the amount of speed gained in the first 0.4 seconds.
+    jump = speed_at_0_4 - speed_at_release,
+    .groups = "drop"
+  )
+# Add the jump metric back onto the steal attempt table.
+# The select() line removes previous jump columns to avoid duplicate names after re-running the chunk.
+steal_attempts <- steal_attempts %>%
+  select(-any_of(c("jump", "jump.x", "jump.y"))) %>%
+  left_join(
+    jump_metric,
+    by = c("game_string", "play_per_game")
+  )
+```
+
+## Setting up data for future use:
+
+```{r}
+## Save clean runner metrics
+
+# runner_info is the clean runner-side file for the final leaderboard maker.
+# It contains one row per steal attempt with the runner metrics already calculated.
+
+# Create a clean dataset with only the runner-side information needed later.
+# This file is used by the leaderboard and modeling scripts.
+
+runner_info <- steal_attempts %>%
+  mutate(
+# Convert play_per_game to numeric so it joins cleanly with other play-level files later.
+    play_per_game = as.numeric(play_per_game)
+  ) %>%
+  select(
+    game_string,
+    play_per_game,
+    runner,
+    catcher,
+    outcome,
+    top_speed,
+    jump
+  ) %>%
+  filter(
+# Keep only plays with a known outcome and valid runner metrics.
+    !is.na(outcome),
+    !is.na(top_speed),
+    !is.na(jump)
+  )
+# Save the cleaned runner metrics so the next files can load them directly.
+saveRDS(runner_info, "runner_info.rds")
+```
+
+
+
+
+
+
+
+

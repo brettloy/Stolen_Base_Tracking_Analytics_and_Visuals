@@ -1,0 +1,25 @@
+# SMT Data Challenge data (provided to participants, not redistributed)
+ball-events/
+ball-positions/
+player-positions/
+*.csv
+*.pdf
+
+# Intermediate outputs written by the pipeline
+*.rds
+output/
+*.png
+*.gif
+
+# R / RStudio
+.RData
+.RDataTmp*
+.Rhistory
+.Rproj.user/
+*_cache/
+*_files/
+*.html
+
+# OS / tools
+.DS_Store
+.claude/

@@ -1,0 +1,322 @@
+---
+title: "Runner Leaderboard Statistics"
+author: "Brady Schenck"
+date: "2026-07-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+source("SMT_Data_Starter.R")
+runner_tracks <- readRDS("runner_tracks.rds")
+steal_attempts <- readRDS("steal_attempts.rds")
+```
+
+## Gathering instantaneous speeds of runners
+
+```{r}
+runner_tracks <- runner_tracks %>%
+  arrange(game_string, play_per_game, timestamp) %>%
+  group_by(game_string, play_per_game) %>%
+  mutate(
+    dt = (timestamp - lag(timestamp)) / 1000,
+    dx = field_x - lag(field_x),
+    dy = field_y - lag(field_y),
+    speed = sqrt(dx^2 + dy^2) / dt,
+    speed_3frame_avg = slider::slide_dbl(
+      speed,
+      mean,
+      .before = 1,
+      .after = 1,
+      .complete = TRUE,
+      na.rm = TRUE
+    )
+  ) %>%
+  ungroup()
+```
+
+## Top speeds during each play:
+
+```{r}
+top_speed <- runner_tracks %>%
+  group_by(game_string, play_per_game) %>%
+  summarize(
+    top_speed = max(speed_3frame_avg, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+steal_attempts <- steal_attempts %>%
+  left_join(top_speed,
+            by = c("game_string", "play_per_game"))
+```
+
+# Keeping only first few tenths of a second
+
+```{r}
+runner_tracks <- runner_tracks %>%
+  mutate(
+    time_since_pitch =
+      (timestamp - pitch_timestamp)/1000
+  )
+
+```
+
+# Jump metric:
+
+```{r}
+jump_metric <- runner_tracks %>%
+  filter(
+    time_since_pitch >= 0,
+    time_since_pitch <= 0.4
+  ) %>%
+  group_by(game_string, play_per_game) %>%
+  summarize(
+    speed_at_release = speed[which.min(abs(time_since_pitch))],
+    speed_at_0_4 = speed[which.min(abs(time_since_pitch - 0.4))],
+    jump = speed_at_0_4 - speed_at_release,
+    .groups = "drop"
+  )
+steal_attempts <- steal_attempts %>%
+  select(-any_of(c("jump", "jump.x", "jump.y"))) %>%
+  left_join(
+    jump_metric,
+    by = c("game_string", "play_per_game")
+  )
+```
+
+## Good looking leaderboard (all in one):
+
+```{r}
+## Flexible scoreboard leaderboard system
+
+library(dplyr)
+library(purrr)
+library(ggplot2)
+
+## Setting up logic that works for any of the 4 categories
+
+metric_settings <- tibble::tribble(
+  ~metric_id,           ~metric_col,   ~player_col, ~board_title,              ~board_subtitle,                                      ~unit,          ~higher_is_better, ~priority,
+  "runner_top_speed",   "top_speed",   "runner",    "TOP RUNNER SPEEDS",       "Fastest sustained bursts during steal attempts",     "ft/s",         TRUE,              1,
+  "runner_jump",        "jump",        "runner",    "BEST RUNNER JUMPS",       "Most speed gained in the first 0.4 seconds",         "ft/s gained",  TRUE,              2,
+  "catcher_pop_time",   "pop_time",    "catcher",   "FASTEST POP TIMES",       "Quickest catcher throws to the target base",         "sec",          FALSE,             3,
+  "catcher_throw_velo", "throw_velo",  "catcher",   "HARDEST CATCHER THROWS",  "Highest catcher throw velocities on steal attempts", "mph",          TRUE,              4
+)
+
+## Building Leaderboard
+
+build_metric_leaderboard <- function(data, metric_id, metric_col, player_col,
+                                     board_title, board_subtitle, unit,
+                                     higher_is_better, priority) {
+  
+  if (!metric_col %in% names(data)) return(tibble())
+  if (!player_col %in% names(data)) player_col <- "runner"
+  
+  metric_data <- data %>%
+    filter(
+      outcome %in% c("Safe", "Out"),
+      !is.na(.data[[metric_col]])
+    )
+   
+  if (higher_is_better) {
+    metric_data <- metric_data %>% arrange(desc(.data[[metric_col]]))
+  } else {
+    metric_data <- metric_data %>% arrange(.data[[metric_col]])
+  }
+  
+  metric_data %>%
+    slice_head(n = 10) %>%
+    mutate(
+      rank = row_number(),
+      metric_id = metric_id,
+      player_id = as.character(.data[[player_col]]),
+      board_title = board_title,
+      board_subtitle = board_subtitle,
+      priority = priority,
+      metric_value = round(.data[[metric_col]], 2),
+      metric_label = paste(metric_value, unit)
+    ) %>%
+    select(
+      metric_id,
+      board_title,
+      board_subtitle,
+      priority,
+      rank,
+      game_string,
+      play_per_game,
+      player_id,
+      outcome,
+      metric_value,
+      metric_label
+    )
+}
+
+all_leaderboard_triggers <- pmap_dfr(
+  metric_settings,
+  \(metric_id, metric_col, player_col, board_title, board_subtitle,
+    unit, higher_is_better, priority) {
+    
+    build_metric_leaderboard(
+      data = steal_attempts,
+      metric_id = metric_id,
+      metric_col = metric_col,
+      player_col = player_col,
+      board_title = board_title,
+      board_subtitle = board_subtitle,
+      unit = unit,
+      higher_is_better = higher_is_better,
+      priority = priority
+    )
+  }
+)
+
+# Scoreboard Graphic
+
+make_scoreboard_leaderboard <- function(board_data,
+                                        highlight_game = NULL,
+                                        highlight_play = NULL,
+                                        output_file = NULL) {
+  
+  if (nrow(board_data) == 0) return(NULL)
+  
+  plot_data <- board_data %>%
+    arrange(rank) %>%
+    mutate(
+      y = 9.35 - (row_number() - 1) * 0.85,
+      rank_label = paste0("#", rank),
+      player_label = paste0("Player ", player_id),
+      highlight = game_string == highlight_game & play_per_game == highlight_play
+    )
+  
+  p <- ggplot(plot_data, aes(y = y)) +
+    annotate("rect", xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf,
+             fill = "#07111F") +
+    annotate("rect", xmin = 0, xmax = 100, ymin = 10.95, ymax = 12.4,
+             fill = "#12355B") +
+    
+    annotate("text", x = 50, y = 11.8, label = board_data$board_title[1],
+             color = "white", size = 13, fontface = "bold") +
+    annotate("text", x = 50, y = 11.2, label = board_data$board_subtitle[1],
+             color = "#D8E2F3", size = 5.5) +
+    
+    annotate("text", x = 12, y = 10.45, label = "RANK",
+             color = "#AFC4E8", size = 4.5, fontface = "bold") +
+    annotate("text", x = 40, y = 10.45, label = "PLAYER",
+             color = "#AFC4E8", size = 4.5, fontface = "bold") +
+    annotate("text", x = 78, y = 10.45, label = "VALUE",
+             color = "#AFC4E8", size = 4.5, fontface = "bold") +
+    
+    geom_rect(
+      aes(xmin = 5, xmax = 95, ymin = y - 0.34, ymax = y + 0.34,
+          fill = highlight),
+      color = "#E8EEF7",
+      linewidth = 0.35
+    ) +
+    scale_fill_manual(
+      values = c("FALSE" = "#0B1B2B", "TRUE" = "#D99A25"),
+      guide = "none"
+    ) +
+    
+    geom_text(aes(x = 12, label = rank_label),
+              color = "white", size = 7, fontface = "bold") +
+    geom_text(aes(x = 40, label = player_label),
+              color = "white", size = 6, fontface = "bold") +
+    geom_text(aes(x = 78, label = metric_label),
+              color = "white", size = 6, fontface = "bold") +
+    
+    annotate("text", x = 50, y = 0.35,
+             label = "STOLEN BASE SPOTLIGHT | LIVE TRACKING LEADERBOARD",
+             color = "#AFC4E8", size = 4.5, fontface = "bold") +
+    
+    coord_cartesian(xlim = c(0, 100), ylim = c(0, 12.4), expand = FALSE) +
+    theme_void()
+  
+  if (!is.null(output_file)) {
+    ggsave(output_file, p, width = 16, height = 9, dpi = 150)
+  }
+  
+  p
+}
+
+# Demo function
+
+show_live_scoreboard <- function(game_id, play_id, output_file = NULL) {
+  
+  triggered <- all_leaderboard_triggers %>%
+    filter(
+      .data$game_string == .env$game_id,
+      .data$play_per_game == .env$play_id
+    ) %>%
+    arrange(rank, priority)
+  
+  if (nrow(triggered) == 0) {
+    message("No top-10 leaderboard triggered for this play.")
+    return(NULL)
+  }
+  
+  board_to_show <- all_leaderboard_triggers %>%
+    filter(metric_id == triggered$metric_id[1]) %>%
+    arrange(rank)
+  
+  make_scoreboard_leaderboard(
+    board_data = board_to_show,
+    highlight_game = game_id,
+    highlight_play = play_id,
+    output_file = output_file
+  )
+}
+```
+
+## Example use case:
+
+```{r}
+show_live_scoreboard(
+  game_id = 'y1_d181_LRQ_ARN',
+  play_id = 230,
+  output_file = "scoreboard_demo.png"
+)
+```
+
+
+
+
+
+## Setting up data for modeling
+
+```{r}
+modeling_data <- steal_attempts %>%
+  filter(
+    !is.na(top_speed),
+    !is.na(jump),
+    !is.na(outcome)
+  ) %>%
+  mutate(
+    outcome_model = if_else(outcome == "Safe", "Safe", "Out"),
+    safe_binary = if_else(outcome == "Safe", 1, 0),
+    outcome_factor = factor(outcome_model, levels = c("Out", "Safe"))
+  ) %>%
+  select(
+    game_string,
+    play_per_game,
+    runner,
+    outcome,
+    outcome_model,
+    safe_binary,
+    outcome_factor,
+    top_speed,
+    jump
+  )
+
+saveRDS(modeling_data, "steal_modeling_data.rds")
+```
+
+
+
+
+
+
+
+
