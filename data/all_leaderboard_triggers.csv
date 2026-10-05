@@ -1,0 +1,41 @@
+metric_id,board_title,board_subtitle,priority,rank,game_string,game_label,play_per_game,player_id,outcome,metric_value,metric_label
+runner_top_speed,TOP RUNNER SPEEDS,Fastest sustained bursts during steal attempts,1.0,1,y1_d145_ALC_ARN,D145: ALC-ARN,163.0,ALC-9240,Safe,21.15,21.15 mph
+runner_top_speed,TOP RUNNER SPEEDS,Fastest sustained bursts during steal attempts,1.0,2,y1_d211_PWH_ARN,D211: PWH-ARN,201.0,PWH-0771,Safe,20.85,20.85 mph
+runner_top_speed,TOP RUNNER SPEEDS,Fastest sustained bursts during steal attempts,1.0,3,y1_d166_SZJ_ANI,D166: SZJ-ANI,340.0,ANI-7878,Safe,20.74,20.74 mph
+runner_top_speed,TOP RUNNER SPEEDS,Fastest sustained bursts during steal attempts,1.0,4,y1_d113_JPB_ANI,D113: JPB-ANI,208.0,JPB-0696,Safe,20.49,20.49 mph
+runner_top_speed,TOP RUNNER SPEEDS,Fastest sustained bursts during steal attempts,1.0,5,y1_d137_EXB_ARN,D137: EXB-ARN,104.0,EXB-2802,Safe,20.46,20.46 mph
+runner_top_speed,TOP RUNNER SPEEDS,Fastest sustained bursts during steal attempts,1.0,6,y1_d124_VAS_PHD,D124: VAS-PHD,193.0,PHD-0812,Safe,20.45,20.45 mph
+runner_top_speed,TOP RUNNER SPEEDS,Fastest sustained bursts during steal attempts,1.0,7,y1_d125_MEX_ANI,D125: MEX-ANI,148.0,MEX-6247,Safe,20.39,20.39 mph
+runner_top_speed,TOP RUNNER SPEEDS,Fastest sustained bursts during steal attempts,1.0,8,y1_d082_JJP_PHD,D082: JJP-PHD,222.0,JJP-9950,Safe,20.17,20.17 mph
+runner_top_speed,TOP RUNNER SPEEDS,Fastest sustained bursts during steal attempts,1.0,9,y1_d127_MEX_ANI,D127: MEX-ANI,185.0,MEX-9074,Safe,20.13,20.13 mph
+runner_top_speed,TOP RUNNER SPEEDS,Fastest sustained bursts during steal attempts,1.0,10,y1_d199_JGO_VAS,D199: JGO-VAS,65.0,VAS-1487,Safe,20.12,20.12 mph
+runner_jump,BEST RUNNER JUMPS,Most speed gained in the first 0.4 seconds,2.0,1,y1_d199_JGO_VAS,D199: JGO-VAS,65.0,VAS-1487,Safe,8.09,8.09 mph gained
+runner_jump,BEST RUNNER JUMPS,Most speed gained in the first 0.4 seconds,2.0,2,y1_d177_AVV_ARN,D177: AVV-ARN,217.0,ARN-0727,Safe,7.83,7.83 mph gained
+runner_jump,BEST RUNNER JUMPS,Most speed gained in the first 0.4 seconds,2.0,3,y1_d187_RRM_VAS,D187: RRM-VAS,6.0,RRM-1635,Safe,7.41,7.41 mph gained
+runner_jump,BEST RUNNER JUMPS,Most speed gained in the first 0.4 seconds,2.0,4,y1_d149_VNG_VAS,D149: VNG-VAS,112.0,VNG-4196,Safe,7.35,7.35 mph gained
+runner_jump,BEST RUNNER JUMPS,Most speed gained in the first 0.4 seconds,2.0,5,y1_d202_PHD_VAS,D202: PHD-VAS,43.0,VAS-1487,Safe,7.34,7.34 mph gained
+runner_jump,BEST RUNNER JUMPS,Most speed gained in the first 0.4 seconds,2.0,6,y1_d209_QHX_ANI,D209: QHX-ANI,399.0,ANI-1431,Safe,7.06,7.06 mph gained
+runner_jump,BEST RUNNER JUMPS,Most speed gained in the first 0.4 seconds,2.0,7,y1_d198_JGO_VAS,D198: JGO-VAS,110.0,VAS-1487,Safe,6.92,6.92 mph gained
+runner_jump,BEST RUNNER JUMPS,Most speed gained in the first 0.4 seconds,2.0,8,y1_d181_LRQ_ARN,D181: LRQ-ARN,230.0,LRQ-9850,Safe,6.8,6.8 mph gained
+runner_jump,BEST RUNNER JUMPS,Most speed gained in the first 0.4 seconds,2.0,9,y1_d128_MEX_ANI,D128: MEX-ANI,177.0,ANI-2830,Safe,6.62,6.62 mph gained
+runner_jump,BEST RUNNER JUMPS,Most speed gained in the first 0.4 seconds,2.0,10,y1_d185_RRM_VAS,D185: RRM-VAS,112.0,VAS-7896,Safe,6.58,6.58 mph gained
+catcher_pop_time,FASTEST POP TIMES,Quickest catcher throws to second base,3.0,1,y1_d148_VHA_PHD,D148: VHA-PHD,78.0,VHA-5456,Safe,1.78,1.78 sec
+catcher_pop_time,FASTEST POP TIMES,Quickest catcher throws to second base,3.0,2,y1_d115_JPB_ANI,D115: JPB-ANI,6.0,ANI-7970,Safe,1.85,1.85 sec
+catcher_pop_time,FASTEST POP TIMES,Quickest catcher throws to second base,3.0,3,y1_d111_XGM_PHD,D111: XGM-PHD,155.0,PHD-5504,Safe,1.85,1.85 sec
+catcher_pop_time,FASTEST POP TIMES,Quickest catcher throws to second base,3.0,4,y1_d124_VAS_PHD,D124: VAS-PHD,193.0,VAS-9559,Safe,1.85,1.85 sec
+catcher_pop_time,FASTEST POP TIMES,Quickest catcher throws to second base,3.0,5,y1_d133_ARN_VAS,D133: ARN-VAS,25.0,ARN-0174,Safe,1.85,1.85 sec
+catcher_pop_time,FASTEST POP TIMES,Quickest catcher throws to second base,3.0,6,y1_d137_EXB_ARN,D137: EXB-ARN,211.0,ARN-9747,Safe,1.85,1.85 sec
+catcher_pop_time,FASTEST POP TIMES,Quickest catcher throws to second base,3.0,7,y1_d083_RYU_PHD,D083: RYU-PHD,209.0,RYU-6946,Safe,1.9,1.9 sec
+catcher_pop_time,FASTEST POP TIMES,Quickest catcher throws to second base,3.0,8,y1_d105.5_OER_ANI,D105.5: OER-ANI,166.0,ANI-1165,Safe,1.9,1.9 sec
+catcher_pop_time,FASTEST POP TIMES,Quickest catcher throws to second base,3.0,9,y1_d122_MSE_ANI,D122: MSE-ANI,113.0,ANI-6566,Safe,1.9,1.9 sec
+catcher_pop_time,FASTEST POP TIMES,Quickest catcher throws to second base,3.0,10,y1_d124_VAS_PHD,D124: VAS-PHD,69.0,VAS-9559,Safe,1.9,1.9 sec
+catcher_throw_velo,HARDEST CATCHER THROWS,Highest catcher throw velocities on steal attempts,4.0,1,y1_d163_FNQ_PHD,D163: FNQ-PHD,66.0,FNQ-7853,Safe,81.98,81.98 mph
+catcher_throw_velo,HARDEST CATCHER THROWS,Highest catcher throw velocities on steal attempts,4.0,2,y1_d209_PHD_VAS,D209: PHD-VAS,256.0,VAS-6967,Safe,80.97,80.97 mph
+catcher_throw_velo,HARDEST CATCHER THROWS,Highest catcher throw velocities on steal attempts,4.0,3,y1_d166_SZJ_ANI,D166: SZJ-ANI,183.0,SZJ-5082,Safe,80.76,80.76 mph
+catcher_throw_velo,HARDEST CATCHER THROWS,Highest catcher throw velocities on steal attempts,4.0,4,y1_d148_VHA_PHD,D148: VHA-PHD,78.0,VHA-5456,Safe,80.16,80.16 mph
+catcher_throw_velo,HARDEST CATCHER THROWS,Highest catcher throw velocities on steal attempts,4.0,5,y1_d178_AVV_ARN,D178: AVV-ARN,100.0,AVV-5369,Safe,80.1,80.1 mph
+catcher_throw_velo,HARDEST CATCHER THROWS,Highest catcher throw velocities on steal attempts,4.0,6,y1_d177_VAS_PHD,D177: VAS-PHD,169.0,VAS-3698,Safe,79.69,79.69 mph
+catcher_throw_velo,HARDEST CATCHER THROWS,Highest catcher throw velocities on steal attempts,4.0,7,y1_d133_ARN_VAS,D133: ARN-VAS,25.0,ARN-0174,Safe,79.67,79.67 mph
+catcher_throw_velo,HARDEST CATCHER THROWS,Highest catcher throw velocities on steal attempts,4.0,8,y1_d083_RYU_PHD,D083: RYU-PHD,209.0,RYU-6946,Safe,79.43,79.43 mph
+catcher_throw_velo,HARDEST CATCHER THROWS,Highest catcher throw velocities on steal attempts,4.0,9,y1_d127_MEX_ANI,D127: MEX-ANI,185.0,ANI-7970,Safe,79.2,79.2 mph
+catcher_throw_velo,HARDEST CATCHER THROWS,Highest catcher throw velocities on steal attempts,4.0,10,y1_d138_HYG_PHD,D138: HYG-PHD,168.0,PHD-5619,Safe,78.91,78.91 mph

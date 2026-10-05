@@ -24,3 +24,7 @@ output/
 # OS / tools
 .DS_Store
 .claude/
+
+# Published pipeline outputs (play-level summaries only)
+!data/*.rds
+!data/*.csv

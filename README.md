@@ -22,6 +22,7 @@ The pipeline does three things:
 
 ```
 .
+├── data/                             Pipeline outputs (.rds and .csv)
 ├── pipeline/                         Main analysis, run in order
 │   ├── SMT_Data_Starter.R            Data loading (Arrow) and helpers from SMT
 │   ├── 01_all_steal_outcomes.Rmd     Detect attempts and label outcomes
@@ -96,6 +97,22 @@ Note: step 2 uses objects left in the R session by step 1 (`steal_attempts`, `SE
 ```r
 saveRDS(catcher_info, "catcher_info.rds")
 ```
+
+## Output data
+
+The `data/` folder holds the pipeline's play-level results as both `.rds` (for R) and `.csv` (for browsing). These are derived summaries only. The raw SMT tracking data is not included.
+
+| File | Rows | Contents |
+|------|------|----------|
+| `steal_attempts` | 168 | Confirmed attempts with outcome, lead distance, break time, and catcher throw flag |
+| `runner_info` | 170 | Runner top speed and jump per attempt |
+| `catcher_info` | 11,537 | Pop time, exchange time, flight time, and throw speeds for all candidate plays |
+| `steal_modeling_data` | 96 | Joined runner and catcher metrics used to train the model |
+| `safe_probability_table` | 96 | Model Safe% and prediction for each play |
+| `model_moments` | 12 | Stolen Base Spotlight plays (GOOD SLIDE! / GOOD TAG!) |
+| `all_leaderboard_triggers` | 40 | Top-10 plays for each of the four leaderboard metrics |
+
+To run the later steps without the raw data, copy the `.rds` files into `pipeline/` and start at step 4, 5, or 6.
 
 ## Data notes
 
