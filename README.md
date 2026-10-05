@@ -4,6 +4,8 @@ SMT Data Challenge 2026: an R pipeline that detects stolen base attempts from Mi
 
 **Team 305:** Brett Loy and Brady Schenck
 
+📄 **[Read the full paper](paper/team-305-paper.pdf)**
+
 ## Overview
 
 Stolen bases are decided in fractions of a second, but the box score only records the result. This project uses SMT optical tracking data from Minor League Baseball to measure what actually happens on a steal of second base and to turn those measurements into broadcast-style graphics.
@@ -28,9 +30,11 @@ The pipeline does three things:
 │   ├── 04_leaderboards.Rmd           Join metrics, build top-10 leaderboards
 │   ├── 05_stolen_base_modeling.Rmd   Compare models, fit final Safe% model
 │   └── 06_graphic_maker.Rmd          Scoreboard and Spotlight graphics
-└── exploratory/                      Earlier iterations kept for reference
-    ├── Runner_Modeling.Rmd           Runner-only models (logit, tree, RF, XGBoost)
-    └── runner_leaderboards.Rmd       First version of runner metrics and boards
+├── exploratory/                      Earlier iterations kept for reference
+│   ├── Runner_Modeling.Rmd           Runner-only models (logit, tree, RF, XGBoost)
+│   └── runner_leaderboards.Rmd       First version of runner metrics and boards
+└── paper/
+    └── team-305-paper.pdf            Submitted competition paper
 ```
 
 ## Pipeline

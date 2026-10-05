@@ -4,6 +4,7 @@ ball-positions/
 player-positions/
 *.csv
 *.pdf
+!paper/*.pdf
 
 # Intermediate outputs written by the pipeline
 *.rds
